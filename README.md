@@ -34,11 +34,15 @@ A host cron job runs `update.sh` every minute. It:
 4. Pulls Docker base images, rebuilds `app`/`app-tournament` when their sources
    or bases changed (with a weekly fallback rebuild), and `docker compose up -d`.
 
-Crontab entry:
+Crontab entries (updates every minute, database backups nightly):
 
 ```
 * * * * * ~/tm-deploy/update.sh >> ~/tm-update.log 2>&1
+17 3 * * * ~/tm-deploy/backup.sh >> ~/tm-backup.log 2>&1
 ```
+
+`backup.sh` dumps both databases to `~/tm-backups/` and keeps 14 days
+(`BACKUP_DIR` / `RETENTION_DAYS` env overrides).
 
 ## Fresh setup
 
