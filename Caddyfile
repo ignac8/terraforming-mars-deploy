@@ -1,0 +1,20 @@
+(tmsite) {
+    handle_errors {
+        @502 expression {err.status_code} == 502
+        handle @502 {
+            root * /srv
+            try_files {path} /502.html
+            file_server
+        }
+    }
+}
+
+{$DOMAIN} {
+    import tmsite
+    reverse_proxy app:8080
+}
+
+{$TOURNAMENT_DOMAIN} {
+    import tmsite
+    reverse_proxy app-tournament:8080
+}

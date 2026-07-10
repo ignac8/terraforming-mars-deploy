@@ -1,0 +1,126 @@
+# Two instances of the game server behind one Caddy:
+#   app            - main instance, built from the automa checkout
+#   app-tournament - tournament instance, built from the tournament checkout
+#
+# The project name is pinned to `deploy` because the original setup derived it
+# from this file's directory name. Changing it would orphan the production
+# volumes (deploy_pgdata, deploy_caddy_*).
+name: deploy
+
+services:
+  app:
+    container_name: terraforming-mars
+    build: ${MAIN_CHECKOUT:-../terraforming-mars}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - POSTGRES_HOST=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      - SERVER_ID=${SERVER_ID}
+      - MAX_GAME_DAYS=${MAX_GAME_DAYS:-10}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+      - backend
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  app-tournament:
+    build: ${TOURNAMENT_CHECKOUT:-../terraforming-mars-tournament}
+    restart: unless-stopped
+    depends_on:
+      postgres-tournament:
+        condition: service_healthy
+    environment:
+      - POSTGRES_HOST=postgresql://${TOURNAMENT_POSTGRES_USER}:${TOURNAMENT_POSTGRES_PASSWORD}@postgres-tournament:5432/${TOURNAMENT_POSTGRES_DB}?sslmode=disable
+      - SERVER_ID=${TOURNAMENT_SERVER_ID}
+      - MAX_GAME_DAYS=${TOURNAMENT_MAX_GAME_DAYS:-10}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+      - backend-tournament
+
+  postgres-tournament:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${TOURNAMENT_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${TOURNAMENT_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${TOURNAMENT_POSTGRES_DB}
+    volumes:
+      - pgdata_tournament:/var/lib/postgresql
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TOURNAMENT_POSTGRES_USER} -d ${TOURNAMENT_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-tournament
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+      - TOURNAMENT_DOMAIN=${TOURNAMENT_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./502.html:/srv/502.html:ro
+      - ./stars.jpg:/srv/stars.jpg:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+
+networks:
+  frontend:
+  backend:
+  backend-tournament:
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  pgdata_tournament:
