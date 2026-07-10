@@ -1,7 +1,6 @@
 # Deployment
 
-All deployment configuration for the VPS lives on this orphan `deploy` branch.
-It runs **two instances** of the game server behind one Caddy:
+All deployment configuration for the VPS lives in this repo. It runs **two instances** of the game server behind one Caddy:
 
 - **app** — the main instance, built from the `automa` branch
 - **app-tournament** — the tournament practice instance, built from the `tournament` branch
@@ -12,7 +11,7 @@ SSL for both domains.
 ## VPS layout
 
 ```
-~/tm-deploy/                     this branch (compose, Caddyfile, update.sh, .env)
+~/tm-deploy/                     this repo (compose, Caddyfile, update.sh, .env)
 ~/terraforming-mars/             automa checkout (source only)
 ~/terraforming-mars-tournament/  tournament checkout (source only)
 ```
@@ -28,7 +27,7 @@ Containers (compose project pinned to `deploy` so the pre-existing volumes
 
 A host cron job runs `update.sh` every minute. It:
 
-1. Self-updates from `origin/deploy` (re-executes itself after a reset).
+1. Self-updates from this repo (re-executes itself after a reset).
 2. Resets the automa checkout to `origin/automa` and merges `upstream/main` into it.
 3. Resets the tournament checkout to `origin/tournament`. **No upstream merge** —
    that branch is updated deliberately, by hand.
@@ -45,7 +44,7 @@ Crontab entry:
 
 1. Clone the three checkouts:
    ```bash
-   git clone -b deploy https://github.com/ignac8/terraforming-mars.git ~/tm-deploy
+   git clone https://github.com/ignac8/terraforming-mars-deploy.git ~/tm-deploy
    git clone -b automa https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars
    git -C ~/terraforming-mars remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
    git clone -b tournament https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars-tournament
@@ -59,32 +58,6 @@ Crontab entry:
 
 Admin panels: `https://<DOMAIN>/admin?serverId=<SERVER_ID>` and
 `https://<TOURNAMENT_DOMAIN>/admin?serverId=<TOURNAMENT_SERVER_ID>`.
-
-## Migration from the old single-instance setup
-
-The old setup ran everything from `~/terraforming-mars/deploy/` with the compose
-project name implicitly `deploy`. Order matters: the old cron hard-resets the
-automa checkout every minute, so the automa commit that removes `deploy/` must
-be pushed **last**.
-
-1. **Push branches** (`deploy`, `tournament`) — invisible to the running setup.
-2. **On the VPS:**
-   ```bash
-   git clone -b deploy https://github.com/ignac8/terraforming-mars.git ~/tm-deploy
-   git clone -b tournament https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars-tournament
-   cp ~/terraforming-mars/deploy/.env ~/tm-deploy/.env   # then add the TOURNAMENT_* values
-   crontab -e   # swap the update.sh path to ~/tm-deploy/update.sh
-   cd ~/tm-deploy && docker compose up -d
-   ```
-   The pinned project name reuses the existing volumes: the database and the
-   SSL certificates survive; containers are recreated. Verify both sites load
-   and the main instance still has its games, then delete the stale
-   `~/terraforming-mars/deploy/.env`.
-3. **Push the automa commit that removes `deploy/`.** From then on the automa
-   checkout is source-only.
-
-If step 3 ever lands before step 2, nothing burns down: containers keep
-running, only the old auto-update pipeline stops until step 2 completes.
 
 ## Notes
 

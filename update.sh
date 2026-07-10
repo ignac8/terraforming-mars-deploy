@@ -19,7 +19,7 @@ MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
 MAIN_BRANCH="${MAIN_BRANCH:-automa}"
 TOURNAMENT_BRANCH="${TOURNAMENT_BRANCH:-tournament}"
-DEPLOY_BRANCH="${DEPLOY_BRANCH:-deploy}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 LOG_PREFIX="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
 # --- 1. Self-update ---------------------------------------------------------
