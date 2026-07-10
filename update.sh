@@ -119,7 +119,11 @@ for service_and_flag in "app:$MAIN_CHANGED" "app-tournament:$TOURNAMENT_CHANGED"
         touch "/tmp/tm-last-build-$service"
     fi
 done
-docker compose up -d --remove-orphans 2>&1 | grep -vE 'Running$|Healthy$' || true
+docker compose up -d --remove-orphans 2>&1 | grep -vE 'Running$|Healthy$|Waiting$' || true
+
+# Remove images orphaned by rebuilds — the previous app image loses its tag
+# each time a new one is built and would otherwise accumulate forever.
+docker image prune -f 2>&1 | grep -vE '^Total reclaimed space:[[:space:]]*0B$' || true
 
 # Cap total build cache at 5 GB. Belt-and-suspenders: when build only runs on
 # real changes, cache shouldn't grow much, but this prevents pathological growth.
