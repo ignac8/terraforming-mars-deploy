@@ -19,6 +19,7 @@ services:
       - POSTGRES_HOST=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       - SERVER_ID=${SERVER_ID}
       - MAX_GAME_DAYS=${MAX_GAME_DAYS:-10}
+      - GAME_CACHE=${GAME_CACHE:-sweep=auto;idle_age=336h}
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -59,6 +60,7 @@ services:
       - POSTGRES_HOST=postgresql://${TOURNAMENT_POSTGRES_USER}:${TOURNAMENT_POSTGRES_PASSWORD}@postgres-tournament:5432/${TOURNAMENT_POSTGRES_DB}?sslmode=disable
       - SERVER_ID=${TOURNAMENT_SERVER_ID}
       - MAX_GAME_DAYS=${TOURNAMENT_MAX_GAME_DAYS:-10}
+      - GAME_CACHE=${TOURNAMENT_GAME_CACHE:-sweep=auto;idle_age=336h}
     security_opt:
       - no-new-privileges:true
     healthcheck:
