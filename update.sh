@@ -5,7 +5,7 @@
 #   1. Self-updates from origin/deploy (this branch).
 #   2. Updates the source checkouts:
 #        main       — origin/automa, with upstream/main auto-merged
-#        tournament — origin/tournament, no upstream merge (kept stable by hand)
+#        tournament — origin/tournament, with upstream/main auto-merged
 #   3. Refreshes Docker base images and rebuilds/recreates whatever changed.
 #
 # Self-locking: if another instance is running, exit silently. Safe to run
@@ -69,7 +69,7 @@ update_checkout() {
 }
 
 MAIN_CHANGED=$(update_checkout "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes)
-TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" no)
+TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" yes)
 
 # --- 3. Base images ---------------------------------------------------------
 # Pull base images referenced by the Dockerfiles' FROM lines and detect digest

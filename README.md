@@ -29,8 +29,7 @@ A host cron job runs `update.sh` every minute. It:
 
 1. Self-updates from this repo (re-executes itself after a reset).
 2. Resets the automa checkout to `origin/automa` and merges `upstream/main` into it.
-3. Resets the tournament checkout to `origin/tournament`. **No upstream merge** —
-   that branch is updated deliberately, by hand.
+3. Same for the tournament checkout with `origin/tournament`.
 4. Pulls Docker base images, rebuilds `app`/`app-tournament` when their sources
    or bases changed (with a weekly fallback rebuild), and `docker compose up -d`.
 
@@ -52,6 +51,7 @@ Crontab entries (updates every minute, database backups nightly):
    git clone -b automa https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars
    git -C ~/terraforming-mars remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
    git clone -b tournament https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars-tournament
+   git -C ~/terraforming-mars-tournament remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
    ```
 2. `cp ~/tm-deploy/.env.example ~/tm-deploy/.env` and fill in domains, database
    credentials and server ids (`openssl rand -hex 16` makes good secrets).
