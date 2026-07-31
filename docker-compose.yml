@@ -91,6 +91,28 @@ services:
     networks:
       - backend-tournament
 
+  housie:
+    container_name: housie
+    build: ${HOUSIE_CHECKOUT:-../housie}
+    restart: unless-stopped
+    environment:
+      - HOUSIE_PASSWORD=${HOUSIE_PASSWORD}
+      - HOUSIE_SESSION_SECRET=${HOUSIE_SESSION_SECRET}
+      - HOUSIE_USERS=${HOUSIE_USERS:-Kotek,Kocinka}
+      - HOUSIE_TIMEZONE=${HOUSIE_TIMEZONE:-Europe/Warsaw}
+    volumes:
+      - housie_data:/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # the housie image installs curl for exactly this (its JRE base ships neither curl nor wget)
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -100,10 +122,14 @@ services:
     environment:
       - DOMAIN=${DOMAIN}
       - TOURNAMENT_DOMAIN=${TOURNAMENT_DOMAIN}
+      # default must live BOTH here and in the Caddyfile placeholder: a set-but-empty
+      # env var would otherwise defeat Caddy's own {$VAR:default} fallback
+      - HOUSIE_DOMAIN=${HOUSIE_DOMAIN:-housie.localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./502.html:/srv/502.html:ro
       - ./stars.jpg:/srv/stars.jpg:ro
+      - ./housie-502.html:/srv/housie-502.html:ro
       - caddy_data:/data
       - caddy_config:/config
     security_opt:
@@ -126,3 +152,4 @@ volumes:
   caddy_data:
   caddy_config:
   pgdata_tournament:
+  housie_data:

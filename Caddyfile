@@ -18,3 +18,23 @@
     import tmsite
     reverse_proxy app-tournament:8080
 }
+
+(housiesite) {
+    handle_errors {
+        @502 expression {err.status_code} == 502
+        handle @502 {
+            root * /srv
+            rewrite * /housie-502.html
+            file_server
+        }
+    }
+}
+
+# the :housie.localhost fallback matters — see the compose caddy env comment
+{$HOUSIE_DOMAIN:housie.localhost} {
+    import housiesite
+    request_body {
+        max_size 30MB
+    }
+    reverse_proxy housie:8080
+}

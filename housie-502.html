@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<title>housie — brb 🏠</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    font-family: system-ui, sans-serif;
+    background: #fdf6f0; color: #5c5470;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #2a2438; color: #dbd8e3; }
+  }
+  .card { text-align: center; padding: 2rem; max-width: 26rem; }
+  .house { font-size: 4rem; animation: bob 2.5s ease-in-out infinite; display: inline-block; }
+  @keyframes bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-0.4rem) } }
+  h1 { font-size: 1.4rem; margin: 1rem 0 0.5rem; }
+  p { margin: 0.25rem 0; line-height: 1.5; }
+  .small { opacity: 0.7; font-size: 0.85rem; margin-top: 1rem; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <span class="house">🏠</span>
+    <h1>housie is redecorating</h1>
+    <p>The board is restarting — probably a fresh deploy landing.</p>
+    <p>It usually takes less than a minute. This page retries by itself.</p>
+    <p class="small">Kotek &amp; Kocinka's house build waits for no one 🔨</p>
+  </div>
+</body>
+</html>
