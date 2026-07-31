@@ -17,7 +17,7 @@ if [ ! -d "$BACKUP_REPO/.git" ]; then
 fi
 
 latest() {
-    docker exec "$CONTAINER" sh -c "ls -1 /data/backups/$1 2>/dev/null | sort | tail -1"
+    docker exec "$CONTAINER" sh -c "cd /data/backups 2>/dev/null && ls -1 $1 2>/dev/null | sort | tail -1"
 }
 
 SNAP=$(latest 'housie-*.db')
