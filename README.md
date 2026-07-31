@@ -56,17 +56,25 @@ pushes — git history is the timeline. **03:20/03:40 are coupled; move both
 together.** Restore procedure: `docs/backup-restore.md` in the housie repo
 (short version: stop container, drop the snapshot in as `housie.db`,
 DELETE any stale `housie.db-wal`/`-shm`, `chown -R 1000:1000`, start).
+When the attachment set nears **~2 GB**, move attachments off the git
+harvest to restic + Backblaze B2 — the prepared runbook (bucket, `.env`
+keys, cron line) is in the same `docs/backup-restore.md`.
 
 ## Fresh setup
 
-1. Clone the three checkouts:
+1. Clone the checkouts:
    ```bash
    git clone https://github.com/ignac8/terraforming-mars-deploy.git ~/tm-deploy
    git clone -b automa https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars
    git -C ~/terraforming-mars remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
    git clone -b tournament https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars-tournament
    git -C ~/terraforming-mars-tournament remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
+   git clone github-housie:ignac8/housie.git ~/housie
+   git clone github-housie-backups:ignac8/housie-backups.git ~/housie-backups
    ```
+   The last two are private and use the deploy-key host aliases
+   (`github-housie` read-only, `github-housie-backups` read-write) from
+   `~/.ssh/config` — key setup is in the housie repo's `docs/deploy.md`.
 2. `cp ~/tm-deploy/.env.example ~/tm-deploy/.env` and fill in domains, database
    credentials and server ids (`openssl rand -hex 16` makes good secrets).
 3. Point DNS A records for both domains at the VPS. Caddy retries certificate
