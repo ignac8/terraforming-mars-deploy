@@ -36,5 +36,11 @@
     request_body {
         max_size 30MB
     }
-    reverse_proxy housie:8080
+    reverse_proxy housie:8080 {
+        # replace any client-supplied X-Forwarded-For with the real peer, so
+        # housie's login throttle can't be bypassed by a spoofed header
+        # (the app also defensively reads the LAST hop). Caddy is the only
+        # ingress, so there is no legitimate upstream XFF to preserve.
+        header_up X-Forwarded-For {remote_host}
+    }
 }
