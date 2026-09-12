@@ -128,7 +128,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8000/showdown/info || exit 1"]
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8000/showdown/info || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
