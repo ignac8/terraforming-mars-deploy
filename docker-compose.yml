@@ -165,7 +165,7 @@ services:
       # default must live BOTH here and in the Caddyfile placeholder: a set-but-empty
       # env var would otherwise defeat Caddy's own {$VAR:default} fallback
       - HOUSIE_DOMAIN=${HOUSIE_DOMAIN:-housie.localhost}
-      - ARENA_DOMAIN=${ARENA_DOMAIN:-arena.localhost}
+      - ARENA_DOMAIN=${ARENA_DOMAIN:-pokemon.zerko.it}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./502.html:/srv/502.html:ro

@@ -46,8 +46,10 @@
 }
 
 # M5.2: the Showdown server behind the hosted client. Caddy proxies the WebSocket
-# upgrade without configuration. The :arena.localhost fallback matters for the same
+# upgrade without configuration. The :pokemon.zerko.it fallback IS the production
+# domain (owner's call, 2026-09-12: the name is public through DNS anyway, so
+# nothing in .env is needed for this vhost); the fallback form matters for the same
 # set-but-empty reason as HOUSIE_DOMAIN -- see the compose caddy env comment.
-{$ARENA_DOMAIN:arena.localhost} {
+{$ARENA_DOMAIN:pokemon.zerko.it} {
     reverse_proxy showdown:8000
 }

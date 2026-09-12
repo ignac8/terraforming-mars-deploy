@@ -107,7 +107,8 @@ teambuilder, and challenge `Platinum` in `[Gen 5] OU`. Platinum plays a fresh te
 every game and one game at a time.
 
 Results: `docker logs arena` prints one line per finished game with the team seed.
-`.env` keys: `ARENA_DOMAIN` (required), `ARENA_BOT_NAME` (default `Platinum`),
+`.env` keys: `ARENA_DOMAIN` (default `pokemon.zerko.it`, so nothing is needed for the
+production host), `ARENA_BOT_NAME` (default `Platinum`),
 `ARENA_CHALLENGERS` (comma-separated names to accept from; empty means anyone).
 
 If the hosted client cannot reach the server, the tunnel door is
@@ -128,7 +129,7 @@ If the hosted client cannot reach the server, the tunnel door is
 - housie's `HOUSIE_DOMAIN` default (`housie.localhost`) is declared BOTH in
   compose and in the Caddyfile placeholder — a set-but-empty variable would
   otherwise defeat Caddy's fallback and swallow every request on the vhost.
-  `ARENA_DOMAIN` (`arena.localhost`) follows the same pattern for the same
-  reason.
+  `ARENA_DOMAIN` (`pokemon.zerko.it` — the production name itself, so the
+  vhost needs no `.env` entry) follows the same pattern for the same reason.
 - housie serves attachments only through its authenticated API; nothing from
   its volume is ever mounted into Caddy.
