@@ -44,3 +44,10 @@
         header_up X-Forwarded-For {remote_host}
     }
 }
+
+# M5.2: the Showdown server behind the hosted client. Caddy proxies the WebSocket
+# upgrade without configuration. The :arena.localhost fallback matters for the same
+# set-but-empty reason as HOUSIE_DOMAIN -- see the compose caddy env comment.
+{$ARENA_DOMAIN:arena.localhost} {
+    reverse_proxy showdown:8000
+}

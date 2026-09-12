@@ -6,6 +6,7 @@
 #   2. Updates the source checkouts:
 #        main       — origin/automa, with upstream/main auto-merged
 #        tournament — origin/tournament, with upstream/main auto-merged
+#        pokebot    — origin/main, no upstream (private; deploy key, see README)
 #   3. Refreshes Docker base images and rebuilds/recreates whatever changed.
 #
 # Self-locking: if another instance is running, exit silently. Safe to run
@@ -18,9 +19,11 @@ DEPLOY_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
 HOUSIE_CHECKOUT="${HOUSIE_CHECKOUT:-$DEPLOY_DIR/../housie}"
+POKEBOT_CHECKOUT="${POKEBOT_CHECKOUT:-$DEPLOY_DIR/../pokebot}"
 MAIN_BRANCH="${MAIN_BRANCH:-automa}"
 TOURNAMENT_BRANCH="${TOURNAMENT_BRANCH:-tournament}"
 HOUSIE_BRANCH="${HOUSIE_BRANCH:-main}"
+POKEBOT_BRANCH="${POKEBOT_BRANCH:-main}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 LOG_PREFIX="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
@@ -73,6 +76,7 @@ update_checkout() {
 MAIN_CHANGED=$(update_checkout "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes)
 TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" yes)
 HOUSIE_CHANGED=$(update_checkout "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH" no)
+POKEBOT_CHANGED=$(update_checkout "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH" no)
 
 # --- 3. Base images ---------------------------------------------------------
 # Pull base images referenced by the Dockerfiles' FROM lines and detect digest
@@ -86,7 +90,7 @@ base_images() {
 }
 
 BASE_CHANGED=0
-BASES=$( (base_images "$MAIN_CHECKOUT"; base_images "$TOURNAMENT_CHECKOUT"; base_images "$HOUSIE_CHECKOUT") | sort -u)
+BASES=$( (base_images "$MAIN_CHECKOUT"; base_images "$TOURNAMENT_CHECKOUT"; base_images "$HOUSIE_CHECKOUT"; base_images "$POKEBOT_CHECKOUT"; base_images "$DEPLOY_DIR/showdown") | sort -u)
 for img in $BASES; do
     BEFORE=$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null || echo none)
     docker pull -q "$img" >/dev/null 2>&1 || continue
@@ -99,8 +103,10 @@ done
 
 # --- 4. Build & recreate ----------------------------------------------------
 # Build a locally-built service when its checkout changed, a base image was
-# just updated, or its marker is missing / older than a week. The weekly
-# fallback covers anything the digest-based detection silently misses.
+# just updated, its marker is missing / older than a week, or -- for a service
+# whose Dockerfile lives in THIS repo (showdown) -- that Dockerfile is newer
+# than the marker: `git reset --hard` above touches a changed file's mtime, so
+# a pin bump deploys on the next minute rather than on the weekly fallback.
 needs_build() {
     marker="/tmp/tm-last-build-$1"
     if [ "$2" = "1" ] || [ "$BASE_CHANGED" = "1" ]; then
@@ -109,15 +115,20 @@ needs_build() {
     if [ ! -f "$marker" ] || [ $(($(date +%s) - $(stat -c %Y "$marker"))) -gt 604800 ]; then
         return 0
     fi
+    if [ -n "$3" ] && [ "$3" -nt "$marker" ]; then
+        return 0
+    fi
     return 1
 }
 
 cd "$DEPLOY_DIR" || exit 1
 docker compose pull --quiet 2>&1
-for service_and_flag in "app:$MAIN_CHANGED" "app-tournament:$TOURNAMENT_CHANGED" "housie:$HOUSIE_CHANGED"; do
-    service=${service_and_flag%%:*}
-    flag=${service_and_flag##*:}
-    if needs_build "$service" "$flag"; then
+for entry in "app:$MAIN_CHANGED:" "app-tournament:$TOURNAMENT_CHANGED:" "housie:$HOUSIE_CHANGED:" "arena:$POKEBOT_CHANGED:" "showdown:0:$DEPLOY_DIR/showdown/Dockerfile"; do
+    service=${entry%%:*}
+    rest=${entry#*:}
+    flag=${rest%%:*}
+    file=${rest#*:}
+    if needs_build "$service" "$flag" "$file"; then
         docker compose build --quiet "$service" 2>&1
         touch "/tmp/tm-last-build-$service"
     fi

@@ -113,6 +113,46 @@ services:
     networks:
       - frontend
 
+  # M5.2 Game Corner: a public Gen 5 OU Showdown server and pokebot's Platinum bot.
+  # `showdown` is built from ./showdown at pokebot's pinned commit; `arena` from the
+  # pokebot checkout (private repo, deploy key -- see README). The bot reaches the
+  # server over backend-arena; Caddy reaches it over frontend; the host port on
+  # 127.0.0.1 is the SSH-tunnel door (`ssh -L 8000:localhost:8000` +
+  # https://localhost.psim.us/) if the hosted client's route ever misbehaves.
+  showdown:
+    container_name: showdown
+    build: ./showdown
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8000/showdown/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+      - backend-arena
+
+  arena:
+    container_name: arena
+    build: ${POKEBOT_CHECKOUT:-../pokebot}
+    restart: unless-stopped
+    depends_on:
+      showdown:
+        condition: service_healthy
+    environment:
+      - ARENA_SERVER=ws://showdown:8000/showdown/websocket
+      - ARENA_BOT_NAME=${ARENA_BOT_NAME:-Platinum}
+      - ARENA_CHALLENGERS=${ARENA_CHALLENGERS:-}
+      - ARENA_GEN=5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend-arena
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -125,6 +165,7 @@ services:
       # default must live BOTH here and in the Caddyfile placeholder: a set-but-empty
       # env var would otherwise defeat Caddy's own {$VAR:default} fallback
       - HOUSIE_DOMAIN=${HOUSIE_DOMAIN:-housie.localhost}
+      - ARENA_DOMAIN=${ARENA_DOMAIN:-arena.localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./502.html:/srv/502.html:ro
@@ -146,6 +187,7 @@ networks:
   frontend:
   backend:
   backend-tournament:
+  backend-arena:
 
 volumes:
   pgdata:
