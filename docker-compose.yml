@@ -113,7 +113,7 @@ services:
     networks:
       - frontend
 
-  # M5.2 Game Corner: a public Gen 5 OU Showdown server and pokebot's Platinum bot.
+  # M5.1 Game Corner: a public Gen 5 OU Showdown server and pokebot's Platinum bot.
   # `showdown` is built from ./showdown at pokebot's pinned commit; `arena` from the
   # pokebot checkout (private repo, deploy key -- see README). The bot reaches the
   # server over backend-arena; Caddy reaches it over frontend; the host port on
