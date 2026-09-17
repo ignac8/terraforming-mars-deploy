@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 # Manual health check for the VPS and everything update.sh deploys on it:
 #   ~/tm-deploy/health.sh
-# Read-only: starts nothing, changes nothing, needs no sudo. Prints ok / WARN / FAIL
-# per check, a summary at the end, and exits non-zero when anything FAILed.
+# Read-only: starts nothing, changes nothing. Prints ok / WARN / FAIL per check, a
+# summary at the end, and exits non-zero when anything FAILed. Works the same with
+# and without sudo: the operator is whoever owns this directory (mzerko), so the
+# logs, backups and crontab are theirs even when sudo has pointed HOME at /root,
+# and git runs as them so root never writes into their checkouts. sudo buys one
+# thing: the kernel log, where OOM kills show up.
 # Checkout locations and branches honour the same env overrides as update.sh;
 # BACKUP_DIR and BACKUP_REPO the same as backup.sh and housie-backup.sh.
 exec </dev/null
 export GIT_PAGER=cat PAGER=cat SYSTEMD_PAGER=cat LC_ALL=C
 DEPLOY_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 D=$DEPLOY_DIR; ENVF=$D/.env; PROJECT=deploy
+OWNER=$(stat -c %U "$DEPLOY_DIR" 2>/dev/null); OWNER=${OWNER:-$(id -un)}
+OWNER_HOME=$(getent passwd "$OWNER" 2>/dev/null | cut -d: -f6); OWNER_HOME=${OWNER_HOME:-$HOME}
+if [ "$(id -un)" != "$OWNER" ] && [ "$(id -u)" = 0 ]; then
+  gitc(){ runuser -u "$OWNER" -- git "$@"; }
+  cronlist(){ crontab -l -u "$OWNER"; }
+else
+  gitc(){ git "$@"; }
+  cronlist(){ crontab -l; }
+fi
 MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
 HOUSIE_CHECKOUT="${HOUSIE_CHECKOUT:-$DEPLOY_DIR/../housie}"
@@ -18,8 +31,8 @@ TOURNAMENT_BRANCH="${TOURNAMENT_BRANCH:-tournament}"
 HOUSIE_BRANCH="${HOUSIE_BRANCH:-main}"
 POKEBOT_BRANCH="${POKEBOT_BRANCH:-main}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
-BACKUP_DIR="${BACKUP_DIR:-$HOME/tm-backups}"
-BACKUP_REPO="${BACKUP_REPO:-$HOME/housie-backups}"
+BACKUP_DIR="${BACKUP_DIR:-$OWNER_HOME/tm-backups}"
+BACKUP_REPO="${BACKUP_REPO:-$OWNER_HOME/housie-backups}"
 R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[1m'; N=$'\e[0m'
 FAILS=(); WARNS=()
 ok(){ echo "  ${G}ok${N}   $*"; }
@@ -64,7 +77,7 @@ fi
 if has journalctl; then
   klog=$(journalctl -k --no-pager --since=-24h 2>&1)
   if grep -qiE 'not seeing messages|insufficient permissions|No journal files' <<<"$klog"; then
-    warn "kernel log not readable as $(id -un) (needs the adm group) — OOM kills invisible"
+    warn "kernel log not readable as $(id -un) (needs the adm group, or run with sudo) — OOM kills invisible"
   else
     ooms=$(grep -ciE 'out of memory|oom-kill|oom_reaper' <<<"$klog")
     ((ooms > 0)) && fail "kernel log: $ooms OOM lines in 24h" || ok "kernel log: no OOM kills in 24h"
@@ -165,7 +178,7 @@ fi
 
 # ------------------------------------------------------------ auto-update ----
 hdr "Auto-update (cron every minute → update.sh)"
-cronl=$(crontab -l 2>/dev/null)
+cronl=$(cronlist 2>/dev/null)
 n=$(grep -cE '^[^#].*tm-deploy/(update|backup|housie-backup)\.sh' <<<"$cronl")
 ((n >= 3)) && ok "crontab has $n tm-deploy entries" || fail "crontab has $n of 3 expected tm-deploy entries"
 grep -E 'tm-deploy' <<<"$cronl" | sed 's/^/       /'
@@ -178,12 +191,12 @@ if [ -n "$upid" ]; then
   et=$(ps -o etimes= -p "$upid" 2>/dev/null | tr -d ' ')
   ((et > 900)) && warn "update.sh running for $(hum "${et:-0}") (pid $upid) — stuck build?" || info "update.sh currently running ($(hum "${et:-0}"), pid $upid)"
 fi
-if [ -f "$HOME/tm-update.log" ]; then
-  errs=$(tail -n 500 "$HOME/tm-update.log" | grep -cE 'ERROR|failed to solve')
+if [ -f "$OWNER_HOME/tm-update.log" ]; then
+  errs=$(tail -n 500 "$OWNER_HOME/tm-update.log" | grep -cE 'ERROR|failed to solve')
   ((errs > 0)) && warn "$errs ERROR lines in the last 500 lines of ~/tm-update.log" || ok "no ERROR in the last 500 lines of ~/tm-update.log"
-  info "~/tm-update.log ($(du -h "$HOME/tm-update.log" | cut -f1)), last 12 lines:"
-  tail -n 12 "$HOME/tm-update.log" | cut -c1-200 | sed 's/^/         │ /'
-  ((errs > 0)) && { info "last ERROR lines:"; tail -n 500 "$HOME/tm-update.log" | grep -E 'ERROR|failed to solve' | tail -3 | cut -c1-200 | sed 's/^/         │ /'; }
+  info "~/tm-update.log ($(du -h "$OWNER_HOME/tm-update.log" | cut -f1)), last 12 lines:"
+  tail -n 12 "$OWNER_HOME/tm-update.log" | cut -c1-200 | sed 's/^/         │ /'
+  ((errs > 0)) && { info "last ERROR lines:"; tail -n 500 "$OWNER_HOME/tm-update.log" | grep -E 'ERROR|failed to solve' | tail -3 | cut -c1-200 | sed 's/^/         │ /'; }
 else warn "~/tm-update.log missing"; fi
 echo
 for s in app app-tournament housie arena showdown; do
@@ -195,16 +208,16 @@ chk(){ # dir branch [upstream]
   local d=$1 b=$2 up=$3 head rem dirty last msg
   d=$(CDPATH='' cd -- "$d" 2>/dev/null && pwd) || { fail "$(basename "$1"): no directory at $1"; return; }
   [ -d "$d/.git" ] || { fail "$(basename "$d"): no git checkout at $d"; return; }
-  head=$(git -C "$d" rev-parse --short HEAD 2>/dev/null)
-  rem=$(git -C "$d" rev-parse --short "origin/$b" 2>/dev/null)
-  dirty=$(git -C "$d" status --porcelain --untracked-files=no 2>/dev/null | wc -l)
-  last=$(git -C "$d" log -1 --format='%cd %s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null | cut -c1-90)
+  head=$(gitc -C "$d" rev-parse --short HEAD 2>/dev/null)
+  rem=$(gitc -C "$d" rev-parse --short "origin/$b" 2>/dev/null)
+  dirty=$(gitc -C "$d" status --porcelain --untracked-files=no 2>/dev/null | wc -l)
+  last=$(gitc -C "$d" log -1 --format='%cd %s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null | cut -c1-90)
   msg="$(basename "$d") @ $head · origin/$b $rem · $last"
-  if ! git -C "$d" merge-base --is-ancestor "origin/$b" HEAD 2>/dev/null; then warn "$msg · BEHIND origin/$b (cron should have reset it)"
+  if ! gitc -C "$d" merge-base --is-ancestor "origin/$b" HEAD 2>/dev/null; then warn "$msg · BEHIND origin/$b (cron should have reset it)"
   elif ((dirty > 0)); then warn "$msg · $dirty locally modified tracked files (not what git has)"
   else ok "$msg"; fi
-  if [ -n "$up" ] && git -C "$d" rev-parse -q --verify upstream/main >/dev/null 2>&1; then
-    git -C "$d" merge-base --is-ancestor upstream/main HEAD 2>/dev/null || warn "$(basename "$d"): upstream/main not merged in (merge conflict? see ~/tm-update.log)"
+  if [ -n "$up" ] && gitc -C "$d" rev-parse -q --verify upstream/main >/dev/null 2>&1; then
+    gitc -C "$d" merge-base --is-ancestor upstream/main HEAD 2>/dev/null || warn "$(basename "$d"): upstream/main not merged in (merge conflict? see ~/tm-update.log)"
   fi
 }
 chk "$D" "$DEPLOY_BRANCH"
@@ -221,7 +234,7 @@ if ((DOCKER_OK)); then
     cid=$(cid_of "$svc"); [ -n "$cid" ] && [ -d "$dir/.git" ] || continue
     img=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null)
     created=$(docker inspect -f '{{.Created}}' "$img" 2>/dev/null)
-    cts=$(date -d "$created" +%s 2>/dev/null); hts=$(git -C "$dir" log -1 --format=%ct 2>/dev/null)
+    cts=$(date -d "$created" +%s 2>/dev/null); hts=$(gitc -C "$dir" log -1 --format=%ct 2>/dev/null)
     [ -n "$cts" ] && [ -n "$hts" ] || continue
     if ((hts > cts)); then info "$svc: image built $(hum $(( $(date +%s) - cts ))) ago, checkout HEAD committed $(hum $(( $(date +%s) - hts ))) ago — fine if that commit touched no built files, otherwise the build failed (see log errors above)"
     else ok "$svc: running image built $(hum $(( $(date +%s) - cts ))) ago, after the checkout's HEAD commit"; fi
@@ -265,26 +278,26 @@ if [ -d "$bdir" ]; then
   done
   info "$bdir: $(ls "$bdir"/*.sql.gz 2>/dev/null | wc -l) dumps, $(du -sh "$bdir" 2>/dev/null | cut -f1) total (retention 14d)"
 else fail "$bdir missing — backup.sh has never run?"; fi
-if [ -f "$HOME/tm-backup.log" ]; then
-  n=$(grep -c . "$HOME/tm-backup.log")
-  ((n > 0)) && { warn "~/tm-backup.log has $n lines (pg_dump only writes there on errors); last 3:"; tail -3 "$HOME/tm-backup.log" | cut -c1-200 | sed 's/^/         │ /'; } || ok "~/tm-backup.log empty (no pg_dump errors)"
+if [ -f "$OWNER_HOME/tm-backup.log" ]; then
+  n=$(grep -c . "$OWNER_HOME/tm-backup.log")
+  ((n > 0)) && { warn "~/tm-backup.log has $n lines (pg_dump only writes there on errors); last 3:"; tail -3 "$OWNER_HOME/tm-backup.log" | cut -c1-200 | sed 's/^/         │ /'; } || ok "~/tm-backup.log empty (no pg_dump errors)"
 fi
 echo
 hb=$BACKUP_REPO
 if [ -d "$hb/.git" ]; then
-  lastc=$(git -C "$hb" log -1 --format=%ct 2>/dev/null); a=$(( $(date +%s) - ${lastc:-0} ))
-  subj=$(git -C "$hb" log -1 --format=%s 2>/dev/null)
+  lastc=$(gitc -C "$hb" log -1 --format=%ct 2>/dev/null); a=$(( $(date +%s) - ${lastc:-0} ))
+  subj=$(gitc -C "$hb" log -1 --format=%s 2>/dev/null)
   ((a > 93600)) && fail "housie-backups: last commit $(hum $a) ago ($subj)" || ok "housie-backups: last commit $(hum $a) ago ($subj)"
-  unp=$(git -C "$hb" rev-list --count origin/main..HEAD 2>/dev/null); dirty=$(git -C "$hb" status --porcelain 2>/dev/null | wc -l)
+  unp=$(gitc -C "$hb" rev-list --count origin/main..HEAD 2>/dev/null); dirty=$(gitc -C "$hb" status --porcelain 2>/dev/null | wc -l)
   if [ -z "$unp" ]; then warn "housie-backups: no origin/main ref — cannot tell whether it is pushed"
   elif ((unp > 0)); then fail "housie-backups: $unp commit(s) not pushed to GitHub"
   else ok "housie-backups: everything pushed"; fi
   ((dirty > 0)) && warn "housie-backups: $dirty uncommitted files (harvest commit failed?)"
   info "housie-backups: $(du -sh "$hb/attachments" 2>/dev/null | cut -f1 || echo 0) attachments (move to restic/B2 near ~2 GB), housie.db $(stat -c %s "$hb/housie.db" 2>/dev/null | numfmt --to=iec 2>/dev/null)"
 else fail "$hb is not a git clone"; fi
-if [ -f "$HOME/housie-backup.log" ]; then
-  last=$(tail -1 "$HOME/housie-backup.log")
-  grep -qE 'ERROR|WARNING' <<<"$(tail -3 "$HOME/housie-backup.log")" && warn "~/housie-backup.log recent: $last" || info "~/housie-backup.log last: $last"
+if [ -f "$OWNER_HOME/housie-backup.log" ]; then
+  last=$(tail -1 "$OWNER_HOME/housie-backup.log")
+  grep -qE 'ERROR|WARNING' <<<"$(tail -3 "$OWNER_HOME/housie-backup.log")" && warn "~/housie-backup.log recent: $last" || info "~/housie-backup.log last: $last"
 fi
 if [ -n "$HOUSIE_HEALTH" ]; then
   lb=$(grep -oE '"lastBackupAt" *: *("[^"]*"|null)' <<<"$HOUSIE_HEALTH" | sed -E 's/^"lastBackupAt" *: *//; s/"//g')
