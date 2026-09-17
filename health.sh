@@ -177,9 +177,9 @@ if has openssl; then
     now=$(date +%s); nbs=$(date -d "$nb" +%s); nas=$(date -d "$na" +%s)
     life=$(( (nas - nbs) / 86400 )); left=$(( (nas - now) / 86400 ))
     # Caddy renews once a third of the lifetime is left; still unrenewed 3 days past that = renewal failing
-    floor=3; ((life < 10)) && floor=1   # a 6-day cert is renewed at 2 days left
+    floor=3; slack=3; if ((life < 10)); then floor=1; slack=0; fi   # a 6-day cert is renewed at 2 days left
     if ((left < floor)); then fail "TLS $d expires in ${left}d ($na)"
-    elif ((left < life / 3 - 3)); then warn "TLS $d expires in ${left}d of ${life}d — Caddy should have renewed by now (check caddy logs)"
+    elif ((left < life / 3 - slack)); then warn "TLS $d expires in ${left}d of ${life}d — Caddy should have renewed by now (check caddy logs)"
     else ok "TLS $d expires in ${left}d (${life}d cert, $na)"; fi
   done
 fi
@@ -194,17 +194,24 @@ if [ -e /tmp/tm-deploy-update.lock ]; then
   a=$(age /tmp/tm-deploy-update.lock)
   ((a < 180)) && ok "update.sh last started $(hum $a) ago" || fail "update.sh last started $(hum $a) ago — cron not running?"
 else fail "no /tmp/tm-deploy-update.lock — update.sh has never run since boot"; fi
-upid=$(pgrep -of '^(/bin/)?(ba)?sh (-c )?.*tm-deploy/update\.sh' 2>/dev/null)   # the script or cron's sh -c, not an editor on it
+upid=$(pgrep -of '^(/usr)?(/bin/)?(ba)?sh (-c )?.*tm-deploy/update\.sh' 2>/dev/null)   # the script or cron's sh -c, not an editor on it
 if [ -n "$upid" ]; then
   et=$(ps -o etimes= -p "$upid" 2>/dev/null | tr -d ' ')
   ((et > 900)) && warn "update.sh running for $(hum "${et:-0}") (pid $upid) — stuck build?" || info "update.sh currently running ($(hum "${et:-0}"), pid $upid)"
 fi
 if [ -f "$OWNER_HOME/tm-update.log" ]; then
-  # update.sh stamps its own lines "YYYY-MM-DD HH:MM:SS UTC"; docker's output carries no stamp and
-  # is attributed to the stamped line before it. A quiet minute writes nothing, so a line count is
-  # not a time window: one transient fetch error would stay a WARN for months.
+  # update.sh stamps its own lines "YYYY-MM-DD HH:MM:SS UTC" but only for a reset, a merge, a fetch
+  # error or a base-image change; docker's output carries no stamp. A quiet minute writes nothing,
+  # so a line count is not a time window: one transient fetch error would stay a WARN for months.
+  # Unstamped lines are attributed to the stamped line before them, except the block after the
+  # LAST stamp, which is as new as the file's mtime: a failed weekly-fallback rebuild or a compose
+  # pull/up failing every minute writes exactly that block and no stamp at all.
   since=$(date -u -d '3 days ago' '+%Y-%m-%d %H:%M:%S')
-  recent=$(awk -v since="$since" '/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] UTC/ { keep = (substr($0, 1, 19) >= since) } keep' "$OWNER_HOME/tm-update.log")
+  tailok=$(( $(age "$OWNER_HOME/tm-update.log") < 259200 ))
+  recent=$(awk -v since="$since" -v tailok="$tailok" '
+    /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] UTC/ { keep = (substr($0, 1, 19) >= since); n = 0; if (keep) print; next }
+    { if (keep) print; else buf[++n] = $0 }
+    END { if (!keep && tailok) for (i = 1; i <= n; i++) print buf[i] }' "$OWNER_HOME/tm-update.log")
   errlines=$(grep -E 'ERROR|failed to solve|Error response' <<<"$recent"); errs=$(grep -c . <<<"$errlines")
   ((errs > 0)) && warn "$errs ERROR lines in ~/tm-update.log in the last 3 days" || ok "no ERROR in ~/tm-update.log in the last 3 days"
   info "~/tm-update.log ($(du -h "$OWNER_HOME/tm-update.log" | cut -f1)), last 12 lines:"
