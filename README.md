@@ -30,6 +30,8 @@ Containers (compose project pinned to `deploy` so the pre-existing volumes
 
 - `app` + `postgres` (networks: frontend, backend)
 - `app-tournament` + `postgres-tournament` (networks: frontend, backend-tournament)
+- `housie` (volume `housie_data`, network: frontend)
+- `showdown` (127.0.0.1:8000, networks: frontend, backend-arena) + `arena` (network: backend-arena)
 - `caddy` (ports 80/443, network: frontend)
 
 ## Auto-update
@@ -70,14 +72,15 @@ keys, cron line) is in the same `docs/backup-restore.md`.
 ## Health check
 
 `~/tm-deploy/health.sh` is the manual "is everything fine" command. It is
-read-only and needs no sudo. It checks the host (load, memory, disk, reboot
+read-only and runs the same with or without sudo (only the OOM-kill check
+needs the kernel log, so either the adm group or sudo). It checks the host (load, memory, disk, reboot
 pending, failed units, OOM kills, ports 80/443 open and 8000 loopback-only),
 every compose service's state and health, the public endpoints through Caddy
 with certificate expiry judged against Caddy's renewal window, the update
 cron (crontab lines, last run, `~/tm-update.log` errors, build markers,
 each checkout in sync with origin), both Postgres instances, the nightly
 dumps and the housie harvest, the arena's recent games and Caddy's TLS
-errors. Every line is `ok`, `WARN` or `FAIL`, the summary at the end repeats
+errors. Every check is `ok`, `WARN` or `FAIL`, the summary at the end repeats
 the non-ok ones, and the exit code is non-zero when anything failed.
 
 ## Fresh setup

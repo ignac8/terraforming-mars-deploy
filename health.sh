@@ -5,12 +5,13 @@
 # summary at the end, and exits non-zero when anything FAILed. Works the same with
 # and without sudo: the operator is whoever owns this directory (mzerko), so the
 # logs, backups and crontab are theirs even when sudo has pointed HOME at /root,
-# and git runs as them so root never writes into their checkouts. sudo buys one
-# thing: the kernel log, where OOM kills show up.
+# and git runs as them through runuser so root never writes into their checkouts
+# (each runuser call leaves a PAM session line in auth.log, its only trace). sudo
+# buys one thing: the kernel log, where OOM kills show up. Any other user is refused.
 # Checkout locations and branches honour the same env overrides as update.sh;
 # BACKUP_DIR and BACKUP_REPO the same as backup.sh and housie-backup.sh.
 exec </dev/null
-export GIT_PAGER=cat PAGER=cat SYSTEMD_PAGER=cat LC_ALL=C
+export GIT_PAGER=cat PAGER=cat SYSTEMD_PAGER=cat LC_ALL=C GIT_OPTIONAL_LOCKS=0
 DEPLOY_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 D=$DEPLOY_DIR; ENVF=$D/.env; PROJECT=deploy
 OWNER=$(stat -c %U "$DEPLOY_DIR" 2>/dev/null); OWNER=${OWNER:-$(id -un)}
@@ -21,6 +22,9 @@ if [ "$(id -un)" != "$OWNER" ] && [ "$(id -u)" = 0 ]; then
 else
   gitc(){ git "$@"; }
   cronlist(){ crontab -l; }
+fi
+if [ "$(id -un)" != "$OWNER" ] && [ "$(id -u)" != 0 ]; then
+  echo "health.sh: $DEPLOY_DIR is owned by $OWNER — run it as $OWNER or with sudo" >&2; exit 2
 fi
 MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
@@ -34,6 +38,7 @@ DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 BACKUP_DIR="${BACKUP_DIR:-$OWNER_HOME/tm-backups}"
 BACKUP_REPO="${BACKUP_REPO:-$OWNER_HOME/housie-backups}"
 R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[1m'; N=$'\e[0m'
+[ -t 1 ] || R= G= Y= B= N=
 FAILS=(); WARNS=()
 ok(){ echo "  ${G}ok${N}   $*"; }
 warn(){ echo "  ${Y}WARN${N} $*"; WARNS+=("$*"); }
@@ -44,7 +49,8 @@ envv(){ grep -E "^$1=" "$ENVF" 2>/dev/null | head -1 | cut -d= -f2- | sed -e "s/
 age(){ local m; m=$(stat -c %Y "$1" 2>/dev/null) || m=0; echo $(( $(date +%s) - m )); }
 hum(){ local s=$1; if ((s<0)); then echo "${s}s"; elif ((s<120)); then echo "${s}s"; elif ((s<7200)); then echo "$((s/60))m"; elif ((s<172800)); then echo "$((s/3600))h"; else echo "$((s/86400))d $(( (s%86400)/3600 ))h"; fi; }
 has(){ command -v "$1" >/dev/null 2>&1; }
-cid_of(){ docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -1; }
+dk(){ timeout 60 docker "$@"; }   # a wedged daemon must not hang the check
+cid_of(){ dk ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -1; }
 
 # ---------------------------------------------------------------- system ----
 hdr "System · $(hostname) · $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -59,7 +65,7 @@ info "$swapinfo"
 dfroot=$(df -P / | awk 'NR==2 {print $5}' | tr -d %)
 if ((dfroot >= 90)); then fail "disk / ${dfroot}% full"; elif ((dfroot >= 80)); then warn "disk / ${dfroot}% full"; else ok "disk / ${dfroot}% full"; fi
 inodes=$(df -iP / | awk 'NR==2 {print $5}' | tr -d %)
-((inodes >= 80)) && warn "inodes / ${inodes}% used" || ok "inodes / ${inodes}% used"
+if [[ "$inodes" =~ ^[0-9]+$ ]]; then ((inodes >= 80)) && warn "inodes / ${inodes}% used" || ok "inodes / ${inodes}% used"; else info "inodes / not reported ($inodes)"; fi
 df -hP / 2>/dev/null | sed 's/^/       /'
 if [ -f /var/run/reboot-required ]; then warn "reboot required: $(tr '\n' ' ' </var/run/reboot-required.pkgs 2>/dev/null)"; else ok "no reboot required"; fi
 if has systemctl; then
@@ -77,7 +83,8 @@ fi
 if has journalctl; then
   klog=$(journalctl -k --no-pager --since=-24h 2>&1)
   if grep -qiE 'not seeing messages|insufficient permissions|No journal files' <<<"$klog"; then
-    warn "kernel log not readable as $(id -un) (needs the adm group, or run with sudo) — OOM kills invisible"
+    if [ "$(id -u)" = 0 ]; then warn "kernel log not readable even as root (no journal?) — OOM kills invisible"
+    else warn "kernel log not readable as $(id -un) (needs the adm group, or run with sudo) — OOM kills invisible"; fi
   else
     ooms=$(grep -ciE 'out of memory|oom-kill|oom_reaper' <<<"$klog")
     ((ooms > 0)) && fail "kernel log: $ooms OOM lines in 24h" || ok "kernel log: no OOM kills in 24h"
@@ -97,21 +104,21 @@ ps -eo pid,user,pcpu,pmem,rss,etimes,comm --sort=-rss 2>/dev/null | head -6 | se
 hdr "Docker"
 DOCKER_OK=0
 if ! has docker; then fail "docker not installed / not in PATH"
-elif ! docker info >/dev/null 2>&1; then fail "docker daemon unreachable (is $(id -un) in the docker group?)"
+elif ! timeout 30 docker info >/dev/null 2>&1; then fail "docker daemon unreachable or not answering within 30s (is $(id -un) in the docker group?)"
 else
   DOCKER_OK=1
-  ok "docker $(docker info -f '{{.ServerVersion}}') · $(docker info -f '{{.ContainersRunning}}/{{.Containers}}') containers running · root $(docker info -f '{{.DockerRootDir}}')"
-  droot=$(docker info -f '{{.DockerRootDir}}')
+  ok "docker $(dk info -f '{{.ServerVersion}}') · $(dk info -f '{{.ContainersRunning}}/{{.Containers}}') containers running · root $(dk info -f '{{.DockerRootDir}}')"
+  droot=$(dk info -f '{{.DockerRootDir}}')
   dfd=$(df -P "$droot" 2>/dev/null | awk 'NR==2 {print $5}' | tr -d %)
   if [ -n "$dfd" ]; then ((dfd >= 85)) && warn "disk under $droot ${dfd}% full" || ok "disk under $droot ${dfd}% full"; fi
-  docker system df 2>/dev/null | sed 's/^/       /'
+  dk system df 2>/dev/null | sed 's/^/       /'
   echo
-  ( cd "$D" 2>/dev/null && docker compose ps -a 2>/dev/null ) | sed 's/^/       /'
+  ( cd "$D" 2>/dev/null && dk compose ps -a 2>/dev/null ) | sed 's/^/       /'
   echo
   for svc in caddy app postgres app-tournament postgres-tournament housie showdown arena; do
     cid=$(cid_of "$svc")
     if [ -z "$cid" ]; then fail "$svc: no container in compose project '$PROJECT'"; continue; fi
-    read -r name st health rc oom started <<<"$(docker inspect -f '{{.Name}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}} {{.RestartCount}} {{.State.OOMKilled}} {{.State.StartedAt}}' "$cid" 2>/dev/null)"
+    read -r name st health rc oom started <<<"$(dk inspect -f '{{.Name}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}} {{.RestartCount}} {{.State.OOMKilled}} {{.State.StartedAt}}' "$cid" 2>/dev/null)"
     name=${name#/}; up=$(( $(date +%s) - $(date -d "$started" +%s 2>/dev/null || echo 0) ))
     msg="$svc ($name) $st/$health · up $(hum $up) · restarts=$rc"
     if [ "$st" != running ]; then fail "$msg"
@@ -119,16 +126,16 @@ else
     elif [ "$health" = starting ]; then warn "$msg"
     elif [ "$oom" = true ]; then warn "$msg · OOM-killed"
     elif ((rc > 0)); then warn "$msg"
-    elif ((up < 600)); then warn "$msg (restarted <10 min ago)"
+    elif ((up < 600)); then ok "$msg · started <10 min ago (a deploy just landed?)"
     else ok "$msg"; fi
   done
   echo
   info "live usage:"
-  docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}' 2>/dev/null | sed 's/^/       /'
+  dk stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}' 2>/dev/null | sed 's/^/       /'
   echo
   info "error-ish log lines per container, last 24h (informational; TM/postgres log some by design):"
-  for c in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' 2>/dev/null | sort); do
-    lines=$(docker logs --since 24h "$c" 2>&1 | grep -iE '\b(error|exception|fatal|panic)\b')
+  for c in $(dk ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' 2>/dev/null | sort); do
+    lines=$(dk logs --since 24h "$c" 2>&1 | grep -iE '\b(error|exception|fatal|panic)\b')
     n=$(grep -c . <<<"$lines")
     printf '       %-30s %s\n' "$c" "$n"
     [ "$n" -gt 0 ] && tail -2 <<<"$lines" | cut -c1-200 | sed 's/^/         │ /'
@@ -141,7 +148,7 @@ hdr "Endpoints (public, through Caddy + TLS)"
 DOMAIN=$(envv DOMAIN); TDOMAIN=$(envv TOURNAMENT_DOMAIN)
 HDOMAIN=$(envv HOUSIE_DOMAIN); HDOMAIN=${HDOMAIN:-housie.localhost}
 ADOMAIN=$(envv ARENA_DOMAIN); ADOMAIN=${ADOMAIN:-pokemon.zerko.it}
-TMPB=$(mktemp)
+TMPB=$(mktemp); trap 'rm -f "$TMPB"' EXIT
 probe(){ # label url expected-body-regex
   local out err code t ip
   : >"$TMPB"
@@ -170,7 +177,8 @@ if has openssl; then
     now=$(date +%s); nbs=$(date -d "$nb" +%s); nas=$(date -d "$na" +%s)
     life=$(( (nas - nbs) / 86400 )); left=$(( (nas - now) / 86400 ))
     # Caddy renews once a third of the lifetime is left; still unrenewed 3 days past that = renewal failing
-    if ((left < 3)); then fail "TLS $d expires in ${left}d ($na)"
+    floor=3; ((life < 10)) && floor=1   # a 6-day cert is renewed at 2 days left
+    if ((left < floor)); then fail "TLS $d expires in ${left}d ($na)"
     elif ((left < life / 3 - 3)); then warn "TLS $d expires in ${left}d of ${life}d — Caddy should have renewed by now (check caddy logs)"
     else ok "TLS $d expires in ${left}d (${life}d cert, $na)"; fi
   done
@@ -186,17 +194,22 @@ if [ -e /tmp/tm-deploy-update.lock ]; then
   a=$(age /tmp/tm-deploy-update.lock)
   ((a < 180)) && ok "update.sh last started $(hum $a) ago" || fail "update.sh last started $(hum $a) ago — cron not running?"
 else fail "no /tmp/tm-deploy-update.lock — update.sh has never run since boot"; fi
-upid=$(pgrep -of 'tm-deploy/update.sh' 2>/dev/null)
+upid=$(pgrep -of '^(/bin/)?(ba)?sh (-c )?.*tm-deploy/update\.sh' 2>/dev/null)   # the script or cron's sh -c, not an editor on it
 if [ -n "$upid" ]; then
   et=$(ps -o etimes= -p "$upid" 2>/dev/null | tr -d ' ')
   ((et > 900)) && warn "update.sh running for $(hum "${et:-0}") (pid $upid) — stuck build?" || info "update.sh currently running ($(hum "${et:-0}"), pid $upid)"
 fi
 if [ -f "$OWNER_HOME/tm-update.log" ]; then
-  errs=$(tail -n 500 "$OWNER_HOME/tm-update.log" | grep -cE 'ERROR|failed to solve')
-  ((errs > 0)) && warn "$errs ERROR lines in the last 500 lines of ~/tm-update.log" || ok "no ERROR in the last 500 lines of ~/tm-update.log"
+  # update.sh stamps its own lines "YYYY-MM-DD HH:MM:SS UTC"; docker's output carries no stamp and
+  # is attributed to the stamped line before it. A quiet minute writes nothing, so a line count is
+  # not a time window: one transient fetch error would stay a WARN for months.
+  since=$(date -u -d '3 days ago' '+%Y-%m-%d %H:%M:%S')
+  recent=$(awk -v since="$since" '/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] UTC/ { keep = (substr($0, 1, 19) >= since) } keep' "$OWNER_HOME/tm-update.log")
+  errlines=$(grep -E 'ERROR|failed to solve|Error response' <<<"$recent"); errs=$(grep -c . <<<"$errlines")
+  ((errs > 0)) && warn "$errs ERROR lines in ~/tm-update.log in the last 3 days" || ok "no ERROR in ~/tm-update.log in the last 3 days"
   info "~/tm-update.log ($(du -h "$OWNER_HOME/tm-update.log" | cut -f1)), last 12 lines:"
   tail -n 12 "$OWNER_HOME/tm-update.log" | cut -c1-200 | sed 's/^/         │ /'
-  ((errs > 0)) && { info "last ERROR lines:"; tail -n 500 "$OWNER_HOME/tm-update.log" | grep -E 'ERROR|failed to solve' | tail -3 | cut -c1-200 | sed 's/^/         │ /'; }
+  ((errs > 0)) && { info "last ERROR lines:"; tail -3 <<<"$errlines" | cut -c1-200 | sed 's/^/         │ /'; }
 else warn "~/tm-update.log missing"; fi
 echo
 for s in app app-tournament housie arena showdown; do
@@ -213,7 +226,8 @@ chk(){ # dir branch [upstream]
   dirty=$(gitc -C "$d" status --porcelain --untracked-files=no 2>/dev/null | wc -l)
   last=$(gitc -C "$d" log -1 --format='%cd %s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null | cut -c1-90)
   msg="$(basename "$d") @ $head · origin/$b $rem · $last"
-  if ! gitc -C "$d" merge-base --is-ancestor "origin/$b" HEAD 2>/dev/null; then warn "$msg · BEHIND origin/$b (cron should have reset it)"
+  if [ -z "$rem" ]; then warn "$msg · no origin/$b ref (never fetched? wrong *_BRANCH override?)"
+  elif ! gitc -C "$d" merge-base --is-ancestor "origin/$b" HEAD 2>/dev/null; then warn "$msg · BEHIND origin/$b (cron should have reset it)"
   elif ((dirty > 0)); then warn "$msg · $dirty locally modified tracked files (not what git has)"
   else ok "$msg"; fi
   if [ -n "$up" ] && gitc -C "$d" rev-parse -q --verify upstream/main >/dev/null 2>&1; then
@@ -232,8 +246,8 @@ if ((DOCKER_OK)); then
   for pair in "app:$MAIN_CHECKOUT" "app-tournament:$TOURNAMENT_CHECKOUT" "housie:$HOUSIE_CHECKOUT" "arena:$POKEBOT_CHECKOUT"; do
     svc=${pair%%:*}; dir=${pair#*:}
     cid=$(cid_of "$svc"); [ -n "$cid" ] && [ -d "$dir/.git" ] || continue
-    img=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null)
-    created=$(docker inspect -f '{{.Created}}' "$img" 2>/dev/null)
+    img=$(dk inspect -f '{{.Image}}' "$cid" 2>/dev/null)
+    created=$(dk inspect -f '{{.Created}}' "$img" 2>/dev/null)
     cts=$(date -d "$created" +%s 2>/dev/null); hts=$(gitc -C "$dir" log -1 --format=%ct 2>/dev/null)
     [ -n "$cts" ] && [ -n "$hts" ] || continue
     if ((hts > cts)); then info "$svc: image built $(hum $(( $(date +%s) - cts ))) ago, checkout HEAD committed $(hum $(( $(date +%s) - hts ))) ago — fine if that commit touched no built files, otherwise the build failed (see log errors above)"
@@ -247,20 +261,21 @@ if ((DOCKER_OK)); then
   pgcheck(){ # label service user db
     local cid; cid=$(cid_of "$2")
     [ -n "$cid" ] || { fail "$1: no $2 container"; return; }
-    if docker exec "$cid" pg_isready -q -U "$3" -d "$4" 2>/dev/null; then
+    if dk exec "$cid" pg_isready -q -U "$3" -d "$4" 2>/dev/null; then
       local size games lastsave
-      size=$(docker exec "$cid" psql -U "$3" -d "$4" -tAc "select pg_size_pretty(pg_database_size(current_database()))" 2>/dev/null)
-      games=$(docker exec "$cid" psql -U "$3" -d "$4" -tAc "select string_agg(status||'='||n, ', ') from (select status, count(*) n from game group by status order by n desc) s" 2>/dev/null)
-      lastsave=$(docker exec "$cid" psql -U "$3" -d "$4" -tAc "select coalesce(extract(epoch from now()-max(created_time))::int, -1) from games" 2>/dev/null)
-      ok "$1 postgres ready · db ${size:-?} · games: ${games:-none} · last save $(hum "${lastsave:--1}") ago"
+      size=$(dk exec "$cid" psql -U "$3" -d "$4" -tAc "select pg_size_pretty(pg_database_size(current_database()))" 2>/dev/null)
+      games=$(dk exec "$cid" psql -U "$3" -d "$4" -tAc "select string_agg(status||'='||n, ', ') from (select status, count(*) n from game group by status order by n desc) s" 2>/dev/null)
+      lastsave=$(dk exec "$cid" psql -U "$3" -d "$4" -tAc "select coalesce(extract(epoch from now()-max(created_time))::int, -1) from games" 2>/dev/null)
+      if [ "${lastsave:--1}" -ge 0 ] 2>/dev/null; then lastsave="$(hum "$lastsave") ago"; else lastsave=never; fi
+      ok "$1 postgres ready · db ${size:-?} · games: ${games:-none} · last save $lastsave"
     else fail "$1 postgres ($2) not ready"; fi
   }
   pgcheck "main      " postgres "$(envv POSTGRES_USER)" "$(envv POSTGRES_DB)"
   pgcheck "tournament" postgres-tournament "$(envv TOURNAMENT_POSTGRES_USER)" "$(envv TOURNAMENT_POSTGRES_DB)"
   hc=$(cid_of housie)
   if [ -n "$hc" ]; then
-    info "housie /data: $(docker exec "$hc" sh -c 'du -sh /data /data/attachments /data/backups 2>/dev/null | tr "\n" " "' 2>/dev/null)"
-    info "housie in-container backups (newest first): $(docker exec "$hc" sh -c 'ls -1t /data/backups 2>/dev/null | head -3 | tr "\n" " "' 2>/dev/null)"
+    info "housie /data: $(dk exec "$hc" sh -c 'du -sh /data /data/attachments /data/backups 2>/dev/null | tr "\n" " "' 2>/dev/null)"
+    info "housie in-container backups (newest first): $(dk exec "$hc" sh -c 'ls -1t /data/backups 2>/dev/null | head -3 | tr "\n" " "' 2>/dev/null)"
   fi
 else info "skipped (no docker)"; fi
 
@@ -279,8 +294,10 @@ if [ -d "$bdir" ]; then
   info "$bdir: $(ls "$bdir"/*.sql.gz 2>/dev/null | wc -l) dumps, $(du -sh "$bdir" 2>/dev/null | cut -f1) total (retention 14d)"
 else fail "$bdir missing — backup.sh has never run?"; fi
 if [ -f "$OWNER_HOME/tm-backup.log" ]; then
-  n=$(grep -c . "$OWNER_HOME/tm-backup.log")
-  ((n > 0)) && { warn "~/tm-backup.log has $n lines (pg_dump only writes there on errors); last 3:"; tail -3 "$OWNER_HOME/tm-backup.log" | cut -c1-200 | sed 's/^/         │ /'; } || ok "~/tm-backup.log empty (no pg_dump errors)"
+  n=$(grep -c . "$OWNER_HOME/tm-backup.log"); la=$(age "$OWNER_HOME/tm-backup.log")
+  if ((n > 0 && la < 259200)); then warn "~/tm-backup.log written $(hum "$la") ago, $n lines (pg_dump only writes there on errors); last 3:"; tail -3 "$OWNER_HOME/tm-backup.log" | cut -c1-200 | sed 's/^/         │ /'
+  elif ((n > 0)); then info "~/tm-backup.log has $n old lines, last written $(hum "$la") ago (truncate it to clear)"
+  else ok "~/tm-backup.log empty (no pg_dump errors)"; fi
 fi
 echo
 hb=$BACKUP_REPO
@@ -293,7 +310,8 @@ if [ -d "$hb/.git" ]; then
   elif ((unp > 0)); then fail "housie-backups: $unp commit(s) not pushed to GitHub"
   else ok "housie-backups: everything pushed"; fi
   ((dirty > 0)) && warn "housie-backups: $dirty uncommitted files (harvest commit failed?)"
-  info "housie-backups: $(du -sh "$hb/attachments" 2>/dev/null | cut -f1 || echo 0) attachments (move to restic/B2 near ~2 GB), housie.db $(stat -c %s "$hb/housie.db" 2>/dev/null | numfmt --to=iec 2>/dev/null)"
+  att=$(du -sh "$hb/attachments" 2>/dev/null | cut -f1); dbsz=$(stat -c %s "$hb/housie.db" 2>/dev/null | numfmt --to=iec 2>/dev/null)
+  info "housie-backups: ${att:-0} attachments (move to restic/B2 near ~2 GB), housie.db ${dbsz:-missing}"
 else fail "$hb is not a git clone"; fi
 if [ -f "$OWNER_HOME/housie-backup.log" ]; then
   last=$(tail -1 "$OWNER_HOME/housie-backup.log")
@@ -311,21 +329,21 @@ fi
 # ------------------------------------------------------------------ arena ----
 hdr "Arena (Platinum on Showdown)"
 if ((DOCKER_OK)) && [ -n "$(cid_of arena)" ]; then
-  alog=$(docker logs arena 2>&1)
+  alog=$(dk logs arena 2>&1)
   start=$(grep 'accepting challenges' <<<"$alog" | tail -1)
   [ -n "$start" ] && ok "$(cut -c1-160 <<<"$start")" || warn "arena has not logged its 'accepting challenges' startup line"
-  g24=$(docker logs --since 24h arena 2>&1 | grep -cE ' vs .*: (won|lost|tie) in [0-9]+ turns')
+  g24=$(dk logs --since 24h arena 2>&1 | grep -cE ' vs .*: (won|lost|tie) in [0-9]+ turns')
   gall=$(grep -cE ' vs .*: (won|lost|tie) in [0-9]+ turns' <<<"$alog")
   info "games finished: $g24 in the last 24h, $gall in the current log"
   info "last 4 arena log lines:"; tail -4 <<<"$alog" | cut -c1-200 | sed 's/^/         │ /'
-  info "last 3 showdown log lines:"; docker logs --tail 3 showdown 2>&1 | cut -c1-200 | sed 's/^/         │ /'
+  info "last 3 showdown log lines:"; dk logs --tail 3 showdown 2>&1 | cut -c1-200 | sed 's/^/         │ /'
 else info "skipped (no docker / no arena container)"; fi
 
 # ------------------------------------------------------------------ caddy ----
 hdr "Caddy"
 cc=$( ((DOCKER_OK)) && cid_of caddy )
 if [ -n "$cc" ]; then
-  cerr=$(docker logs --since 24h "$cc" 2>&1 | grep '"level":"error"')
+  cerr=$(dk logs --since 24h "$cc" 2>&1 | grep '"level":"error"')
   n=$(grep -c . <<<"$cerr"); tls=$(grep -ciE '"logger":"tls|acme|certificate' <<<"$cerr")
   if ((tls > 0)); then fail "caddy: $tls TLS/ACME error lines in 24h ($n errors total)"
   elif ((n > 20)); then warn "caddy: $n error lines in 24h"
