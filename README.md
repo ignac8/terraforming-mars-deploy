@@ -67,6 +67,19 @@ When the attachment set nears **~2 GB**, move attachments off the git
 harvest to restic + Backblaze B2 — the prepared runbook (bucket, `.env`
 keys, cron line) is in the same `docs/backup-restore.md`.
 
+## Health check
+
+`~/tm-deploy/health.sh` is the manual "is everything fine" command. It is
+read-only and needs no sudo. It checks the host (load, memory, disk, reboot
+pending, failed units, OOM kills, ports 80/443 open and 8000 loopback-only),
+every compose service's state and health, the public endpoints through Caddy
+with certificate expiry judged against Caddy's renewal window, the update
+cron (crontab lines, last run, `~/tm-update.log` errors, build markers,
+each checkout in sync with origin), both Postgres instances, the nightly
+dumps and the housie harvest, the arena's recent games and Caddy's TLS
+errors. Every line is `ok`, `WARN` or `FAIL`, the summary at the end repeats
+the non-ok ones, and the exit code is non-zero when anything failed.
+
 ## Fresh setup
 
 1. Clone the checkouts:
