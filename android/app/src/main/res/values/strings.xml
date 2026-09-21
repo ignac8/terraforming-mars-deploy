@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Terraforming Mars</string>
+    <string name="server_starting">Starting the game server…</string>
+    <string name="server_failed">The game server did not start (%1$s).\n\nadb logcat -s TerraformingMars shows why.</string>
+</resources>

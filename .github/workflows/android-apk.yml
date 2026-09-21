@@ -1,0 +1,95 @@
+name: Android APK
+
+# Builds the standalone Android app (android/README.md). Run it by hand to
+# get an APK for a chosen game branch; it also runs when the app itself
+# changes. A manual run publishes the APK on the rolling android-latest
+# release, so the phone can download it from a stable link.
+on:
+  workflow_dispatch:
+    inputs:
+      game_ref:
+        description: 'ignac8/terraforming-mars branch, tag or commit to build'
+        default: automa
+        required: true
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      GAME_REF: ${{ inputs.game_ref || 'automa' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ignac8/terraforming-mars
+          ref: ${{ env.GAME_REF }}
+          path: terraforming-mars
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: terraforming-mars/.nvmrc
+          cache: npm
+          cache-dependency-path: terraforming-mars/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache the nodejs-mobile runtime
+        uses: actions/cache@v4
+        with:
+          path: android/.cache
+          key: nodejs-mobile-18.20.4
+
+      - name: Restore the signing key
+        # Without the secret every run signs with a fresh key, and the phone
+        # asks for an uninstall before it takes the next build.
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          mkdir -p android/keystore
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/keystore/release.jks
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+      - name: Build the APK
+        run: android/build-apk.sh
+        env:
+          MAIN_CHECKOUT: ${{ github.workspace }}/terraforming-mars
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Boot the bundle under Node 18, the runtime the app embeds
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - run: android/smoke-test.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraforming-mars-android
+          path: android/out/terraforming-mars-*.apk
+          if-no-files-found: error
+
+      - name: Publish on the android-latest release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Android app (latest)
+          body: |
+            Standalone offline build of `ignac8/terraforming-mars` at `${{ env.GAME_REF }}`.
+            Install `terraforming-mars.apk` on the phone; android/README.md in this repo explains the rest.
+          files: |
+            android/out/terraforming-mars.apk
+            android/out/terraforming-mars-*.apk
