@@ -130,14 +130,6 @@ production host), `ARENA_BOT_NAME` (default `Platinum`),
 If the hosted client cannot reach the server, the tunnel door is
 `ssh -L 8000:localhost:8000 <vps>` and then `https://localhost.psim.us/`.
 
-## Android app (offline)
-
-`android/` packages the game as a standalone Android APK: the server, its
-file database, the client and a Node.js runtime in one app, for playing with
-no network. `android/build-apk.sh` builds it locally and the "Android APK"
-workflow builds it on GitHub and publishes it on the `android-latest`
-release. Everything about it is in [android/README.md](android/README.md).
-
 ## Notes
 
 - Unfinished games are purged 10 days after creation by default; set
