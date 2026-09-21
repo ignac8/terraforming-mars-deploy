@@ -114,7 +114,7 @@ log "Building the APK ($ANDROID_ABIS, $VERSION_NAME, versionCode $VERSION_CODE)"
 
 OUT="$ANDROID_DIR/out"
 mkdir -p "$OUT"
-APK="$OUT/terraforming-mars-$VERSION_NAME-$(echo "$ANDROID_ABIS" | tr ',' '+').apk"
+APK="$OUT/terraforming-mars-$VERSION_NAME.apk"
 cp "$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk" "$APK"
 cp "$APK" "$OUT/terraforming-mars.apk"
 log "APK: $APK"

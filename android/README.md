@@ -55,7 +55,7 @@ SKIP_GAME_BUILD=1 android/build-apk.sh   # reuse the checkout's existing build/
 ANDROID_ABIS=arm64-v8a,x86_64 android/build-apk.sh   # add an emulator ABI (about 65 MB more)
 ```
 
-The APK lands in `android/out/` as `terraforming-mars-<date>-<game sha>-<abis>.apk`
+The APK lands in `android/out/` as `terraforming-mars-<date>-<game sha>.apk`
 (and a copy named `terraforming-mars.apk`). The first build downloads
 Gradle, the Android Gradle plugin and the nodejs-mobile zip (57 MB, cached
 in `android/.cache/`).
