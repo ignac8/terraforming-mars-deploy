@@ -53,6 +53,7 @@ hum(){ local s=$1; if ((s<0)); then echo "${s}s"; elif ((s<120)); then echo "${s
 has(){ command -v "$1" >/dev/null 2>&1; }
 dk(){ timeout 60 docker "$@"; }   # a wedged daemon must not hang the check
 cid_of(){ dk ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -1; }
+upstream_open(){ gitc -C "$1" rev-parse -q --verify upstream/main >/dev/null 2>&1 && ! gitc -C "$1" merge-base --is-ancestor upstream/main HEAD 2>/dev/null; }   # upstream/main exists and HEAD lacks it
 
 # ---------------------------------------------------------------- system ----
 hdr "System · $(hostname) · $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -225,11 +226,21 @@ if [ -f "$OWNER_HOME/tm-update.log" ]; then
     /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] UTC/ { keep = (substr($0, 1, 19) >= since); n = 0; if (keep) print; next }
     { if (keep) print; else buf[++n] = $0 }
     END { if (!keep && tailok) for (i = 1; i <= n; i++) print buf[i] }' "$OWNER_HOME/tm-update.log")
-  errlines=$(grep -E 'ERROR|failed to solve|Error response' <<<"$recent"); errs=$(grep -c . <<<"$errlines")
-  ((errs > 0)) && warn "$errs ERROR lines in ~/tm-update.log in the last 3 days" || ok "no ERROR in ~/tm-update.log in the last 3 days"
+  errlines=$(grep -E 'ERROR|failed to solve|Error response' <<<"$recent")
+  # a merge conflict logs two lines a minute until someone merges by hand, so three days of
+  # them outlive the fix by days; once every checkout has upstream/main again they are history
+  # (the per-checkout lines below check that live). Any other error keeps its WARN
+  conflicts=$(grep 'merge conflict with upstream/main' <<<"$errlines"); nc=$(grep -c . <<<"$conflicts")
+  others=$(grep -v 'merge conflict with upstream/main' <<<"$errlines"); no=$(grep -c . <<<"$others")
+  open=; for c in "$MAIN_CHECKOUT" "$TOURNAMENT_CHECKOUT"; do upstream_open "$c" && open+=" $(basename "$c")"; done
+  ((no > 0)) && warn "$no ERROR lines in ~/tm-update.log in the last 3 days"
+  if ((nc > 0)) && [ -n "$open" ]; then warn "$nc merge-conflict lines in ~/tm-update.log in the last 3 days, still open in$open"
+  elif ((nc > 0)); then ok "$nc merge-conflict lines in ~/tm-update.log in the last 3 days, the last at $(tail -1 <<<"$conflicts" | cut -c1-16) UTC; resolved, upstream/main is merged everywhere"; fi
+  ((no + nc == 0)) && ok "no ERROR in ~/tm-update.log in the last 3 days"
   info "~/tm-update.log ($(du -h "$OWNER_HOME/tm-update.log" | cut -f1)), last 12 lines:"
   tail -n 12 "$OWNER_HOME/tm-update.log" | cut -c1-200 | sed 's/^/         │ /'
-  ((errs > 0)) && { info "last ERROR lines:"; tail -3 <<<"$errlines" | cut -c1-200 | sed 's/^/         │ /'; }
+  if ((no > 0)); then info "last ERROR lines:"; tail -3 <<<"$others" | cut -c1-200 | sed 's/^/         │ /'
+  elif [ -n "$open" ]; then info "last ERROR lines:"; tail -3 <<<"$conflicts" | cut -c1-200 | sed 's/^/         │ /'; fi
 else warn "~/tm-update.log missing"; fi
 echo
 for s in app app-tournament housie arena showdown; do
@@ -250,9 +261,7 @@ chk(){ # dir branch [upstream]
   elif ! gitc -C "$d" merge-base --is-ancestor "origin/$b" HEAD 2>/dev/null; then warn "$msg · BEHIND origin/$b (cron should have reset it)"
   elif ((dirty > 0)); then warn "$msg · $dirty locally modified tracked files (not what git has)"
   else ok "$msg"; fi
-  if [ -n "$up" ] && gitc -C "$d" rev-parse -q --verify upstream/main >/dev/null 2>&1; then
-    gitc -C "$d" merge-base --is-ancestor upstream/main HEAD 2>/dev/null || warn "$(basename "$d"): upstream/main not merged in (merge conflict? see ~/tm-update.log)"
-  fi
+  if [ -n "$up" ] && upstream_open "$d"; then warn "$(basename "$d"): upstream/main not merged in (merge conflict? see ~/tm-update.log)"; fi
 }
 chk "$D" "$DEPLOY_BRANCH"
 chk "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes
