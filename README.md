@@ -83,6 +83,17 @@ dumps and the housie harvest, the arena's recent games and Caddy's TLS
 errors. Every check is `ok`, `WARN` or `FAIL`, the summary at the end repeats
 the non-ok ones, and the exit code is non-zero when anything failed.
 
+For "was it slow earlier?" the Performance section reads today's `sar` history
+(busiest 10 minutes, peak load, lowest available memory, steal) and each game
+server's `/api/metrics`: the longest event-loop stall, which is the lag every
+player on that instance feels, and how many database operations took over 1 s
+or 2.5 s since the container started. The stall figure covers the time since
+the app started or since the last health.sh run, whichever is later, because
+prom-client resets it on every read of `/api/metrics`. The metrics are fetched
+from inside each container, so `SERVER_ID` never leaves it. Pending apt
+updates are `ok` with the next unattended-upgrades run named, and a merge
+conflict stops counting as a warning once every checkout has `upstream/main`.
+
 ## Fresh setup
 
 1. Clone the checkouts:

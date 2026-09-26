@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Manual health check for the VPS and everything update.sh deploys on it:
 #   ~/tm-deploy/health.sh
-# Read-only: starts nothing, changes nothing. Prints ok / WARN / FAIL per check, a
+# Read-only: starts nothing, changes nothing on disk (reading the apps' /api/metrics does
+# restart their event-loop-stall window: prom-client resets it on every read, and nothing
+# else reads it). Prints ok / WARN / FAIL per check, a
 # summary at the end, and exits non-zero when anything FAILed. Works the same with
 # and without sudo: the operator is whoever owns this directory (mzerko), so the
 # logs, backups and crontab are theirs even when sudo has pointed HOME at /root,
@@ -154,6 +156,42 @@ else
     printf '       %-30s %s\n' "$c" "$n"
     [ "$n" -gt 0 ] && tail -2 <<<"$lines" | cut -c1-200 | sed 's/^/         │ /'
   done
+fi
+
+# ------------------------------------------------------------ performance ----
+hdr "Performance (earlier today, not just now)"
+sa=/var/log/sysstat/sa$(date -u +%d)
+if has sar && [ -r "$sa" ]; then
+  # sar's 10-minute averages since 00:00 UTC: a stall shorter than that is only a dent here,
+  # which is what the per-app event-loop lines below are for
+  memtot=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+  read -r cpu_at idle_min steal_max <<<"$(sar -u -f "$sa" 2>/dev/null | awk '$1 ~ /^[0-9]/ && $2 == "all" { if (m == "" || $NF < m) { m = $NF; at = $1 } if ($(NF-1) > s) s = $(NF-1) } END { if (m != "") print at, m, s + 0 }')"
+  read -r ld_at ld_max <<<"$(sar -q -f "$sa" 2>/dev/null | awk '$1 ~ /^[0-9]/ && $4 ~ /^[0-9.]+$/ { if ($4 > m) { m = $4; at = $1 } } END { if (at != "") print at, m }')"
+  read -r av_at av_min <<<"$(sar -r -f "$sa" 2>/dev/null | awk -v t="$memtot" '$1 ~ /^[0-9]/ && $3 ~ /^[0-9]+$/ { p = $3 * 100 / t; if (m == "" || p < m) { m = p; at = $1 } } END { if (at != "") printf "%s %d\n", at, m }')"
+  if [ -z "$cpu_at" ]; then info "sar has no samples in $sa yet"
+  else
+    busy=$(awk -v i="$idle_min" 'BEGIN { printf "%d", 100 - i }')
+    msg="host today: busiest 10 min at $cpu_at was ${busy}% CPU, peak load ${ld_max:-?} at ${ld_at:-?}, memory never below ${av_min:-?}% available (at ${av_at:-?}), steal peak ${steal_max}%"
+    if ((busy >= 80 || ${av_min:-100} < 10)) || awk -v s="$steal_max" -v l="${ld_max:-0}" -v c="$cores" 'BEGIN { exit !(s >= 10 || l > c) }'; then warn "$msg"; else ok "$msg"; fi
+  fi
+else info "no sar history (sysstat not installed, or $sa unreadable)"; fi
+if ((DOCKER_OK)); then
+  for svc in app app-tournament; do
+    cid=$(cid_of "$svc"); [ -n "$cid" ] || continue
+    # SERVER_ID never leaves the container: wget runs inside it, against its own port
+    m=$(dk exec "$cid" sh -c 'wget -qO- "http://127.0.0.1:8080/api/metrics?serverId=$SERVER_ID"' 2>/dev/null)
+    if ! grep -q '^nodejs_eventloop_lag_max_seconds' <<<"$m"; then warn "$svc: /api/metrics unreadable, so no stall data"; continue; fi
+    read -r lag ops slow1 slow25 <<<"$(awk '/^nodejs_eventloop_lag_max_seconds/ { lag = $NF * 1000 }
+      /^database_operation_latency_count/ { n += $NF }
+      /^database_operation_latency_bucket/ && /le="1000"/ { b1 += $NF }
+      /^database_operation_latency_bucket/ && /le="2500"/ { b25 += $NF }
+      END { printf "%d %d %d %d\n", lag, n, n - b1, n - b25 }' <<<"$m")"
+    started=$(dk inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null); up=$(( $(date +%s) - $(date -d "$started" +%s 2>/dev/null || echo 0) ))
+    msg="$svc: longest event-loop stall ${lag} ms · database: $ops operations since its start $(hum $up) ago, $slow1 over 1 s, $slow25 over 2.5 s"
+    if ((lag >= 1000 || slow25 > 0)); then warn "$msg"; else ok "$msg"; fi
+  done
+  info "a stall is the longest the app's one thread was blocked, for every player on it; the window runs"
+  info "from the app's start or this script's last run, whichever is later (reading /api/metrics restarts it)"
 fi
 
 # -------------------------------------------------------------- endpoints ----
