@@ -9,7 +9,8 @@
 # (each runuser call leaves a PAM session line in auth.log, its only trace). sudo
 # buys one thing: the kernel log, where OOM kills show up. Any other user is refused.
 # Checkout locations and branches honour the same env overrides as update.sh;
-# BACKUP_DIR and BACKUP_REPO the same as backup.sh and housie-backup.sh.
+# BACKUP_DIR and BACKUP_REPO the same as backup.sh and housie-backup.sh; APT_STAMPS
+# points the apt check at another /var/lib/apt/periodic (for trying it on fixtures).
 exec </dev/null
 export GIT_PAGER=cat PAGER=cat SYSTEMD_PAGER=cat LC_ALL=C GIT_OPTIONAL_LOCKS=0
 DEPLOY_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -37,6 +38,7 @@ POKEBOT_BRANCH="${POKEBOT_BRANCH:-main}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 BACKUP_DIR="${BACKUP_DIR:-$OWNER_HOME/tm-backups}"
 BACKUP_REPO="${BACKUP_REPO:-$OWNER_HOME/housie-backups}"
+APT_STAMPS="${APT_STAMPS:-/var/lib/apt/periodic}"
 R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[1m'; N=$'\e[0m'
 [ -t 1 ] || R= G= Y= B= N=
 FAILS=(); WARNS=()
@@ -76,9 +78,20 @@ if has timedatectl; then
   ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
   [ "$ntp" = yes ] && ok "clock NTP-synchronized" || warn "clock not NTP-synchronized ($ntp)"
 fi
-if has apt; then
-  upg=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
-  ((upg > 0)) && warn "$upg apt packages upgradable" || ok "apt: nothing upgradable"
+if has apt-get; then
+  # what would really install: apt-get -s leaves out phased updates, which unattended-upgrades
+  # defers on purpose. Pending is normal between the list refresh (apt-daily) and the next
+  # install run (apt-daily-upgrade); it is stuck only if an install run has happened since the
+  # lists were last refreshed and left the packages there
+  pend=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst ')
+  auto=$(apt-config dump APT::Periodic::Unattended-Upgrade 2>/dev/null | grep -oE '"[0-9]+"' | tr -d '"')
+  next=$(systemctl show apt-daily-upgrade.timer -p NextElapseUSecRealtime --value 2>/dev/null)
+  nexts=$(date -d "$next" +%s 2>/dev/null)
+  if ((pend == 0)); then ok "apt: nothing upgradable"
+  elif [ "${auto:-0}" = 0 ] || [ -z "$nexts" ]; then warn "$pend apt packages upgradable and unattended-upgrades is off"
+  elif [ "$APT_STAMPS/upgrade-stamp" -nt "$APT_STAMPS/update-success-stamp" ]; then
+    warn "$pend apt packages upgradable that the last unattended run ($(hum "$(age "$APT_STAMPS/upgrade-stamp")") ago) left in place: held, not from an allowed origin, or the run failed (see /var/log/unattended-upgrades/)"
+  else ok "apt: $pend packages upgradable, unattended-upgrades installs them at $next (in $(hum $((nexts - $(date +%s)))))"; fi
 fi
 if has journalctl; then
   klog=$(journalctl -k --no-pager --since=-24h 2>&1)
