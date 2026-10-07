@@ -6,14 +6,23 @@
 #   2. Updates the source checkouts:
 #        main       — origin/automa, with upstream/main auto-merged
 #        tournament — origin/tournament, with upstream/main auto-merged
+#                     (frozen 18:00-24:00 Polish time, see below)
 #        pokebot    — origin/main, no upstream (private; deploy key, see README)
 #   3. Refreshes Docker base images and rebuilds/recreates whatever changed.
 #
 # Self-locking: if another instance is running, exit silently. Safe to run
 # manually without conflicting with the cron.
+#
+# MERGE_UPSTREAM_NOW=1 ~/tm-deploy/update.sh merges the latest upstream/main
+# into the tournament checkout even during quiet hours, waiting for a running
+# cron instance instead of exiting.
 
 exec 9>/tmp/tm-deploy-update.lock
-flock -n 9 || exit 0
+if [ -n "$MERGE_UPSTREAM_NOW" ]; then
+    flock -w 300 9 || { echo "update.sh: another run still holds the lock after 5 minutes" >&2; exit 1; }
+else
+    flock -n 9 || exit 0
+fi
 
 DEPLOY_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
@@ -39,7 +48,9 @@ else
 fi
 
 # --- 2. Source checkouts ----------------------------------------------------
-# update_checkout <dir> <branch> <merge_upstream: yes|no>
+# update_checkout <dir> <branch> <merge_upstream: yes|frozen|no>
+# frozen merges the upstream/main ref already in the checkout without fetching
+# a newer one, so a reset to origin/<branch> gets back the same upstream code.
 # Echoes 1 when the checkout changed, 0 otherwise.
 update_checkout() {
     changed=0
@@ -53,8 +64,8 @@ update_checkout() {
         echo "$LOG_PREFIX ERROR: git fetch origin ($2) failed in $1" >&2
     fi
 
-    if [ "$3" = "yes" ]; then
-        if git -C "$1" fetch -q upstream main 2>&1; then
+    if [ "$3" != "no" ]; then
+        if [ "$3" = "frozen" ] || git -C "$1" fetch -q upstream main 2>&1; then
             MERGE_BASE=$(git -C "$1" merge-base HEAD upstream/main)
             UPSTREAM_HEAD=$(git -C "$1" rev-parse upstream/main)
             if [ "$MERGE_BASE" != "$UPSTREAM_HEAD" ]; then
@@ -73,8 +84,16 @@ update_checkout() {
     echo "$changed"
 }
 
+# Quiet hours: tournament games are played 18:00-24:00 Polish time, so the
+# tournament checkout takes no new upstream commits then. Pushes to
+# origin/tournament still deploy, on the upstream/main fetched before 18:00.
+TOURNAMENT_UPSTREAM=yes
+if [ "$(TZ=Europe/Warsaw date +%H)" -ge 18 ] && [ -z "$MERGE_UPSTREAM_NOW" ]; then
+    TOURNAMENT_UPSTREAM=frozen
+fi
+
 MAIN_CHANGED=$(update_checkout "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes)
-TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" yes)
+TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" "$TOURNAMENT_UPSTREAM")
 HOUSIE_CHANGED=$(update_checkout "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH" no)
 POKEBOT_CHANGED=$(update_checkout "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH" no)
 

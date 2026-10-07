@@ -40,7 +40,13 @@ A host cron job runs `update.sh` every minute. It:
 
 1. Self-updates from this repo (re-executes itself after a reset).
 2. Resets the automa checkout to `origin/automa` and merges `upstream/main` into it.
-3. Same for the tournament checkout with `origin/tournament`.
+3. Same for the tournament checkout with `origin/tournament`, except from
+   18:00 to midnight Polish time, when tournament games are played: it then
+   skips `git fetch upstream` and merges the `upstream/main` it already has,
+   so pushes to `tournament` still deploy but no new upstream code arrives.
+   To take the latest upstream anyway, run
+   `MERGE_UPSTREAM_NOW=1 ~/tm-deploy/update.sh 2>&1 | tee -a ~/tm-update.log`
+   (it waits for a running cron instance instead of exiting).
 4. Resets the pokebot checkout to `origin/main`, no upstream merge (same
    pattern as housie).
 5. Pulls Docker base images, rebuilds `app`/`app-tournament` when their sources
