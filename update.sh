@@ -7,6 +7,8 @@
 #        main       — origin/automa, with upstream/main auto-merged
 #        tournament — origin/tournament, with upstream/main auto-merged
 #                     (frozen 18:00-24:00 Polish time, see below)
+#        android    — origin/automa-android, with origin/automa auto-merged;
+#                     android-build.sh (started in the background) builds the APK
 #        pokebot    — origin/main, no upstream (private; deploy key, see README)
 #   3. Refreshes Docker base images and rebuilds/recreates whatever changed.
 #
@@ -29,10 +31,13 @@ MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
 HOUSIE_CHECKOUT="${HOUSIE_CHECKOUT:-$DEPLOY_DIR/../housie}"
 POKEBOT_CHECKOUT="${POKEBOT_CHECKOUT:-$DEPLOY_DIR/../pokebot}"
+ANDROID_CHECKOUT="${ANDROID_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-android}"
+ANDROID_WORK="${ANDROID_WORK:-$DEPLOY_DIR/../tm-android}"
 MAIN_BRANCH="${MAIN_BRANCH:-automa}"
 TOURNAMENT_BRANCH="${TOURNAMENT_BRANCH:-tournament}"
 HOUSIE_BRANCH="${HOUSIE_BRANCH:-main}"
 POKEBOT_BRANCH="${POKEBOT_BRANCH:-main}"
+ANDROID_BRANCH="${ANDROID_BRANCH:-automa-android}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 LOG_PREFIX="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
@@ -48,12 +53,13 @@ else
 fi
 
 # --- 2. Source checkouts ----------------------------------------------------
-# update_checkout <dir> <branch> <merge_upstream: yes|frozen|no>
-# frozen merges the upstream/main ref already in the checkout without fetching
-# a newer one, so a reset to origin/<branch> gets back the same upstream code.
+# update_checkout <dir> <branch> <merge: yes|frozen|no> [<merge ref, default upstream/main>]
+# frozen merges the merge ref already in the checkout without fetching a newer
+# one, so a reset to origin/<branch> gets back the same upstream code.
 # Echoes 1 when the checkout changed, 0 otherwise.
 update_checkout() {
     changed=0
+    merge_ref=${4:-upstream/main}
     if git -C "$1" fetch -q origin "$2" 2>&1; then
         if ! git -C "$1" merge-base --is-ancestor "origin/$2" HEAD 2>/dev/null; then
             echo "$LOG_PREFIX origin/$2 has new commits, resetting $1" >&2
@@ -65,20 +71,20 @@ update_checkout() {
     fi
 
     if [ "$3" != "no" ]; then
-        if [ "$3" = "frozen" ] || git -C "$1" fetch -q upstream main 2>&1; then
-            MERGE_BASE=$(git -C "$1" merge-base HEAD upstream/main)
-            UPSTREAM_HEAD=$(git -C "$1" rev-parse upstream/main)
+        if [ "$3" = "frozen" ] || git -C "$1" fetch -q "${merge_ref%%/*}" "${merge_ref#*/}" 2>&1; then
+            MERGE_BASE=$(git -C "$1" merge-base HEAD "$merge_ref")
+            UPSTREAM_HEAD=$(git -C "$1" rev-parse "$merge_ref")
             if [ "$MERGE_BASE" != "$UPSTREAM_HEAD" ]; then
-                echo "$LOG_PREFIX upstream/main has new commits, merging into $1" >&2
-                if git -C "$1" -c user.email=updater@terraforming-mars -c user.name=updater merge upstream/main --no-edit >&2; then
+                echo "$LOG_PREFIX $merge_ref has new commits, merging into $1" >&2
+                if git -C "$1" -c user.email=updater@terraforming-mars -c user.name=updater merge "$merge_ref" --no-edit >&2; then
                     changed=1
                 else
-                    echo "$LOG_PREFIX ERROR: merge conflict with upstream/main, aborting" >&2
+                    echo "$LOG_PREFIX ERROR: merge conflict with $merge_ref, aborting" >&2
                     git -C "$1" merge --abort >&2
                 fi
             fi
         else
-            echo "$LOG_PREFIX ERROR: git fetch upstream failed in $1" >&2
+            echo "$LOG_PREFIX ERROR: git fetch ${merge_ref%%/*} failed in $1" >&2
         fi
     fi
     echo "$changed"
@@ -96,6 +102,25 @@ MAIN_CHANGED=$(update_checkout "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes)
 TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" "$TOURNAMENT_UPSTREAM")
 HOUSIE_CHANGED=$(update_checkout "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH" no)
 POKEBOT_CHANGED=$(update_checkout "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH" no)
+
+# The android checkout feeds no container: android-build.sh builds the APK from
+# it in the background, under its own lock, so a build of several minutes never
+# holds up this script. It starts every minute and exits at once unless the
+# checkout moved since its last build. The first run clones the checkout,
+# borrowing the main checkout's objects.
+if [ ! -d "$ANDROID_CHECKOUT/.git" ]; then
+    echo "$LOG_PREFIX cloning $ANDROID_BRANCH into $ANDROID_CHECKOUT"
+    git clone -q --branch "$ANDROID_BRANCH" --reference-if-able "$MAIN_CHECKOUT" --dissociate \
+        "$(git -C "$MAIN_CHECKOUT" remote get-url origin)" "$ANDROID_CHECKOUT" 2>&1 \
+        || echo "$LOG_PREFIX ERROR: git clone of $ANDROID_BRANCH into $ANDROID_CHECKOUT failed"
+fi
+if [ -d "$ANDROID_CHECKOUT/.git" ]; then
+    update_checkout "$ANDROID_CHECKOUT" "$ANDROID_BRANCH" yes origin/automa >/dev/null
+    # fd 9 closed so the build does not hold this script's lock
+    setsid "$DEPLOY_DIR/android-build.sh" >> "$HOME/tm-android-build.log" 2>&1 9>&- </dev/null &
+fi
+# Caddy mounts the APK folder; created here so docker does not create it as root.
+mkdir -p "$ANDROID_WORK/apk"
 
 # --- 3. Base images ---------------------------------------------------------
 # Pull base images referenced by the Dockerfiles' FROM lines and detect digest

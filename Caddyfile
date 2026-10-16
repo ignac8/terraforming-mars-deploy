@@ -11,7 +11,24 @@
 
 {$DOMAIN} {
     import tmsite
-    reverse_proxy app:8080
+    # The offline Android app (android-build.sh), not linked from anywhere and
+    # behind basic auth: APK_USER / APK_PASSWORD_HASH in .env (README). The
+    # default hash belongs to a random password nobody kept, so the folder stays
+    # shut until .env sets one. Both defaults also live in the compose caddy env:
+    # set but empty, the hash would stop Caddy from starting at all.
+    redir /android /android/
+    handle_path /android/* {
+        basic_auth {
+            {$APK_USER:android} {$APK_PASSWORD_HASH:JDJhJDE0JGNkUEJQR0Y3Q3E3UVNlRG5kMTB5eS5aRElFOHlYYkpDNzFQSVpibjJOODc3ZXI3TTRDbk9t}
+        }
+        root * /srv/android
+        @apk path *.apk
+        header @apk Content-Type application/vnd.android.package-archive
+        file_server browse
+    }
+    handle {
+        reverse_proxy app:8080
+    }
 }
 
 {$TOURNAMENT_DOMAIN} {

@@ -1,6 +1,7 @@
 # Two instances of the game server behind one Caddy:
 #   app            - main instance, built from the automa checkout
 #   app-tournament - tournament instance, built from the tournament checkout
+# Caddy also serves the Android APK that android-build.sh builds outside compose.
 #
 # The project name is pinned to `deploy` because the original setup derived it
 # from this file's directory name. Changing it would orphan the production
@@ -166,11 +167,17 @@ services:
       # env var would otherwise defeat Caddy's own {$VAR:default} fallback
       - HOUSIE_DOMAIN=${HOUSIE_DOMAIN:-housie.localhost}
       - ARENA_DOMAIN=${ARENA_DOMAIN:-pokemon.zerko.it}
+      # the /android/ folder's basic auth; the hash is base64 of caddy hash-password's
+      # output (no $ for compose to eat). The default locks it, see the Caddyfile
+      - APK_USER=${APK_USER:-android}
+      - APK_PASSWORD_HASH=${APK_PASSWORD_HASH:-JDJhJDE0JGNkUEJQR0Y3Q3E3UVNlRG5kMTB5eS5aRElFOHlYYkpDNzFQSVpibjJOODc3ZXI3TTRDbk9t}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./502.html:/srv/502.html:ro
       - ./stars.jpg:/srv/stars.jpg:ro
       - ./housie-502.html:/srv/housie-502.html:ro
+      # android-build.sh publishes the APK here (update.sh creates the folder)
+      - ${ANDROID_WORK:-../tm-android}/apk:/srv/android:ro
       - caddy_data:/data
       - caddy_config:/config
     security_opt:

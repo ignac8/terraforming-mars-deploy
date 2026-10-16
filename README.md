@@ -10,6 +10,10 @@ one Caddy:
 - **showdown** — an upstream Pokemon Showdown server at the commit pokebot pins, for the arena
 - **arena** — pokebot's Platinum bot, built from `ignac8/pokebot` `main` (private; deploy key)
 
+Outside compose, `android-build.sh` builds the offline Android app from the
+`automa-android` branch, and Caddy serves the APK behind a password at
+`https://<DOMAIN>/android/` (see [Android APK](#android-apk)).
+
 Each game instance has its own PostgreSQL container and volume; housie keeps
 SQLite + attachment files on its own volume. Caddy terminates SSL for all
 domains.
@@ -23,6 +27,8 @@ domains.
 ~/housie/                        housie checkout (source only)
 ~/housie-backups/                clone of ignac8/housie-backups (harvest target)
 ~/pokebot/                       pokebot checkout (source only)
+~/terraforming-mars-android/     automa-android checkout (source only; update.sh clones it)
+~/tm-android/                    APK build clone, caches, published apk/, keystore/, state/
 ```
 
 Containers (compose project pinned to `deploy` so the pre-existing volumes
@@ -49,7 +55,10 @@ A host cron job runs `update.sh` every minute. It:
    (it waits for a running cron instance instead of exiting).
 4. Resets the pokebot checkout to `origin/main`, no upstream merge (same
    pattern as housie).
-5. Pulls Docker base images, rebuilds `app`/`app-tournament` when their sources
+5. Resets the android checkout to `origin/automa-android` and merges
+   `origin/automa` (the pushed branch, not the server's upstream merge of it),
+   then starts `android-build.sh` in the background (see below).
+6. Pulls Docker base images, rebuilds `app`/`app-tournament` when their sources
    or bases changed (with a weekly fallback rebuild), `arena` when its
    checkout changed, `showdown` when its Dockerfile changed, and
    `docker compose up -d`.
@@ -75,6 +84,44 @@ When the attachment set nears **~2 GB**, move attachments off the git
 harvest to restic + Backblaze B2 — the prepared runbook (bucket, `.env`
 keys, cron line) is in the same `docs/backup-restore.md`.
 
+## Android APK
+
+`android-build.sh` builds the offline app (`android/README.md` on the
+`automa-android` branch) whenever the android checkout's HEAD differs from its
+last build, and publishes it to `~/tm-android/apk/`, which Caddy serves at
+`https://<DOMAIN>/android/` behind basic auth: `terraforming-mars.apk` is
+always the newest, next to the last three versioned files and `version.txt`.
+
+- It runs in the `tm-apk-builder` image (`android/Dockerfile`: Node 24, JDK
+  17, the Android SDK, about 4 GB), capped at 2 CPUs and 4 GB, on its own clone
+  in `~/tm-android/build`. The image is rebuilt only when `android/Dockerfile`
+  changes. A build takes several minutes; update.sh does not wait for it.
+- One-line results go to `~/tm-android-build.log`, the whole output of the
+  last build to `~/tm-android/state/last-build.log`. A failed build is retried
+  when the checkout moves, or by hand: `FORCE=1 ~/tm-deploy/android-build.sh`.
+- The APK is published only when `apksigner` shows the release key's
+  certificate (`APK_CERT_SHA256` in the script). Android installs an update
+  only over an app signed with the same key, and losing it means an uninstall,
+  which deletes the phone's saved games.
+- When `origin/automa` does not merge cleanly, the checkout stays on its last
+  good state and health.sh warns; merge automa into automa-android by hand and
+  push.
+
+Setup, once:
+
+1. The signing key: `release.jks`, kept outside every repo. Copy it to
+   `~/tm-android/keystore/release.jks` (`chmod 600`). Its password and alias
+   are build-apk.sh's defaults; when they differ, set
+   `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`
+   in `.env` (only these three keys reach the build container).
+2. The download password, in `.env`:
+   ```bash
+   echo "APK_USER=android"
+   echo "APK_PASSWORD_HASH=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext 'the password' | tr -d '\n' | base64 -w0)"
+   ```
+   The hash is base64-encoded so compose does not read its `$` signs as
+   variables. Until it is set the folder answers 401 to everyone.
+
 ## Health check
 
 `~/tm-deploy/health.sh` is the manual "is everything fine" command. It is
@@ -84,7 +131,9 @@ pending, failed units, OOM kills, ports 80/443 open and 8000 loopback-only),
 every compose service's state and health, the public endpoints through Caddy
 with certificate expiry judged against Caddy's renewal window, the update
 cron (crontab lines, last run, `~/tm-update.log` errors, build markers,
-each checkout in sync with origin), both Postgres instances, the nightly
+each checkout in sync with origin), the Android APK (built from the android
+checkout's HEAD or failed, signing key present, `/android/` asking for a
+password), both Postgres instances, the nightly
 dumps and the housie harvest, the arena's recent games and Caddy's TLS
 errors. Every check is `ok`, `WARN` or `FAIL`, the summary at the end repeats
 the non-ok ones, and the exit code is non-zero when anything failed.
@@ -98,7 +147,8 @@ the app started or since the last health.sh run, whichever is later, because
 prom-client resets it on every read of `/api/metrics`. The metrics are fetched
 from inside each container, so `SERVER_ID` never leaves it. Pending apt
 updates are `ok` with the next unattended-upgrades run named, and a merge
-conflict stops counting as a warning once every checkout has `upstream/main`.
+conflict stops counting as a warning once every checkout has its merge source
+(`upstream/main`, or `origin/automa` for the android checkout).
 
 ## Fresh setup
 

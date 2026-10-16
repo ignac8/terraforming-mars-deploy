@@ -33,10 +33,14 @@ MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
 HOUSIE_CHECKOUT="${HOUSIE_CHECKOUT:-$DEPLOY_DIR/../housie}"
 POKEBOT_CHECKOUT="${POKEBOT_CHECKOUT:-$DEPLOY_DIR/../pokebot}"
+ANDROID_CHECKOUT="${ANDROID_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-android}"
+ANDROID_WORK="${ANDROID_WORK:-$DEPLOY_DIR/../tm-android}"
+ANDROID_KEYSTORE="${ANDROID_KEYSTORE:-$ANDROID_WORK/keystore/release.jks}"
 MAIN_BRANCH="${MAIN_BRANCH:-automa}"
 TOURNAMENT_BRANCH="${TOURNAMENT_BRANCH:-tournament}"
 HOUSIE_BRANCH="${HOUSIE_BRANCH:-main}"
 POKEBOT_BRANCH="${POKEBOT_BRANCH:-main}"
+ANDROID_BRANCH="${ANDROID_BRANCH:-automa-android}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 BACKUP_DIR="${BACKUP_DIR:-$OWNER_HOME/tm-backups}"
 BACKUP_REPO="${BACKUP_REPO:-$OWNER_HOME/housie-backups}"
@@ -55,7 +59,7 @@ hum(){ local s=$1; if ((s<0)); then echo "${s}s"; elif ((s<120)); then echo "${s
 has(){ command -v "$1" >/dev/null 2>&1; }
 dk(){ timeout 60 docker "$@"; }   # a wedged daemon must not hang the check
 cid_of(){ dk ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -1; }
-upstream_open(){ gitc -C "$1" rev-parse -q --verify upstream/main >/dev/null 2>&1 && ! gitc -C "$1" merge-base --is-ancestor upstream/main HEAD 2>/dev/null; }   # upstream/main exists and HEAD lacks it
+merge_open(){ gitc -C "$1" rev-parse -q --verify "$2" >/dev/null 2>&1 && ! gitc -C "$1" merge-base --is-ancestor "$2" HEAD 2>/dev/null; }   # dir ref: the ref exists and HEAD lacks it
 
 # ---------------------------------------------------------------- system ----
 hdr "System · $(hostname) · $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -266,14 +270,15 @@ if [ -f "$OWNER_HOME/tm-update.log" ]; then
     END { if (!keep && tailok) for (i = 1; i <= n; i++) print buf[i] }' "$OWNER_HOME/tm-update.log")
   errlines=$(grep -E 'ERROR|failed to solve|Error response' <<<"$recent")
   # a merge conflict logs two lines a minute until someone merges by hand, so three days of
-  # them outlive the fix by days; once every checkout has upstream/main again they are history
+  # them outlive the fix by days; once every checkout has its merge source again they are history
   # (the per-checkout lines below check that live). Any other error keeps its WARN
-  conflicts=$(grep 'merge conflict with upstream/main' <<<"$errlines"); nc=$(grep -c . <<<"$conflicts")
-  others=$(grep -v 'merge conflict with upstream/main' <<<"$errlines"); no=$(grep -c . <<<"$others")
-  open=; for c in "$MAIN_CHECKOUT" "$TOURNAMENT_CHECKOUT"; do upstream_open "$c" && open+=" $(basename "$c")"; done
+  conflicts=$(grep 'merge conflict with ' <<<"$errlines"); nc=$(grep -c . <<<"$conflicts")
+  others=$(grep -v 'merge conflict with ' <<<"$errlines"); no=$(grep -c . <<<"$others")
+  open=; for c in "$MAIN_CHECKOUT:upstream/main" "$TOURNAMENT_CHECKOUT:upstream/main" "$ANDROID_CHECKOUT:origin/automa"; do
+    merge_open "${c%%:*}" "${c#*:}" && open+=" $(basename "${c%%:*}")"; done
   ((no > 0)) && warn "$no ERROR lines in ~/tm-update.log in the last 3 days"
   if ((nc > 0)) && [ -n "$open" ]; then warn "$nc merge-conflict lines in ~/tm-update.log in the last 3 days, still open in$open"
-  elif ((nc > 0)); then ok "$nc merge-conflict lines in ~/tm-update.log in the last 3 days, the last at $(tail -1 <<<"$conflicts" | cut -c1-16) UTC; resolved, upstream/main is merged everywhere"; fi
+  elif ((nc > 0)); then ok "$nc merge-conflict lines in ~/tm-update.log in the last 3 days, the last at $(tail -1 <<<"$conflicts" | cut -c1-16) UTC; resolved, every checkout has its merge source"; fi
   ((no + nc == 0)) && ok "no ERROR in ~/tm-update.log in the last 3 days"
   info "~/tm-update.log ($(du -h "$OWNER_HOME/tm-update.log" | cut -f1)), last 12 lines:"
   tail -n 12 "$OWNER_HOME/tm-update.log" | cut -c1-200 | sed 's/^/         │ /'
@@ -286,7 +291,7 @@ for s in app app-tournament housie arena showdown; do
   [ -f "$m" ] && info "$s last image build $(hum "$(age "$m")") ago" || warn "$s: no build marker $m (rebuild pending or /tmp cleared by a reboot)"
 done
 echo
-chk(){ # dir branch [upstream]
+chk(){ # dir branch [merged-in ref]
   local d=$1 b=$2 up=$3 head rem dirty last msg
   d=$(CDPATH='' cd -- "$d" 2>/dev/null && pwd) || { fail "$(basename "$1"): no directory at $1"; return; }
   [ -d "$d/.git" ] || { fail "$(basename "$d"): no git checkout at $d"; return; }
@@ -299,11 +304,12 @@ chk(){ # dir branch [upstream]
   elif ! gitc -C "$d" merge-base --is-ancestor "origin/$b" HEAD 2>/dev/null; then warn "$msg · BEHIND origin/$b (cron should have reset it)"
   elif ((dirty > 0)); then warn "$msg · $dirty locally modified tracked files (not what git has)"
   else ok "$msg"; fi
-  if [ -n "$up" ] && upstream_open "$d"; then warn "$(basename "$d"): upstream/main not merged in (merge conflict? see ~/tm-update.log)"; fi
+  if [ -n "$up" ] && merge_open "$d" "$up"; then warn "$(basename "$d"): $up not merged in (merge conflict? see ~/tm-update.log)"; fi
 }
 chk "$D" "$DEPLOY_BRANCH"
-chk "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes
-chk "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" yes
+chk "$MAIN_CHECKOUT" "$MAIN_BRANCH" upstream/main
+chk "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" upstream/main
+chk "$ANDROID_CHECKOUT" "$ANDROID_BRANCH" origin/automa
 chk "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH"
 chk "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH"
 if ((DOCKER_OK)); then
@@ -320,6 +326,39 @@ if ((DOCKER_OK)); then
     if ((hts > cts)); then info "$svc: image built $(hum $(( $(date +%s) - cts ))) ago, checkout HEAD committed $(hum $(( $(date +%s) - hts ))) ago — fine if that commit touched no built files, otherwise the build failed (see log errors above)"
     else ok "$svc: running image built $(hum $(( $(date +%s) - cts ))) ago, after the checkout's HEAD commit"; fi
   done
+fi
+
+# ---------------------------------------------------------------- android ----
+hdr "Android APK (update.sh → android-build.sh in the background)"
+ST=$ANDROID_WORK/state; APKF=$ANDROID_WORK/apk/terraforming-mars.apk
+if [ -d "$ANDROID_CHECKOUT/.git" ]; then
+  ahead=$(gitc -C "$ANDROID_CHECKOUT" rev-parse HEAD 2>/dev/null); ashort=$(cut -c1-9 <<<"$ahead")
+  bpid=$(pgrep -of '^(/usr)?(/bin/)?(ba)?sh .*tm-deploy/android-build\.sh' 2>/dev/null)
+  bet=$( [ -n "$bpid" ] && ps -o etimes= -p "$bpid" 2>/dev/null | tr -d ' ')
+  if [ "$ahead" = "$(cat "$ST/built" 2>/dev/null)" ]; then
+    ok "APK built from the checkout's HEAD $ashort, published $(hum "$(age "$APKF")") ago ($(cut -d' ' -f1 "$ANDROID_WORK/apk/version.txt" 2>/dev/null))"
+  elif [ "$ahead" = "$(cat "$ST/failed" 2>/dev/null)" ]; then
+    fail "APK build of the checkout's HEAD $ashort failed; not retried until the checkout moves (FORCE=1 ~/tm-deploy/android-build.sh retries)"
+    tail -n 2 "$OWNER_HOME/tm-android-build.log" 2>/dev/null | cut -c1-200 | sed 's/^/         │ /'
+    info "end of $ST/last-build.log:"; grep -v '^[[:space:]]*$' "$ST/last-build.log" 2>/dev/null | tail -n 4 | cut -c1-200 | sed 's/^/         │ /'
+  elif [ -n "$bpid" ]; then
+    ((bet > 2700)) && warn "APK build of $ashort running for $(hum "$bet") (pid $bpid) — stuck?" || info "APK build of $ashort running ($(hum "${bet:-0}"), pid $bpid)"
+  else warn "checkout HEAD $ashort not built yet (update.sh starts android-build.sh every minute)"; fi
+  if [ -f "$APKF" ]; then info "serving $(du -h "$APKF" | cut -f1) $APKF, $(ls "$ANDROID_WORK"/apk/terraforming-mars-*.apk 2>/dev/null | wc -l) versioned copies kept"
+  else warn "no APK published yet at $APKF"; fi
+else fail "no android checkout at $ANDROID_CHECKOUT (update.sh clones it on its next run)"; fi
+[ -f "$ANDROID_KEYSTORE" ] && ok "signing key present at $ANDROID_KEYSTORE" || fail "no signing key at $ANDROID_KEYSTORE — builds fail until it is copied in (README)"
+if [ -f "$OWNER_HOME/tm-android-build.log" ]; then
+  info "~/tm-android-build.log, last 3 lines:"; tail -n 3 "$OWNER_HOME/tm-android-build.log" | cut -c1-200 | sed 's/^/         │ /'
+fi
+[ -n "$(envv APK_PASSWORD_HASH)" ] || warn "APK_PASSWORD_HASH not set in .env — /android/ is shut to everyone (README)"
+if [ -n "$DOMAIN" ]; then
+  c=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "https://$DOMAIN/android/terraforming-mars.apk" 2>/dev/null)
+  case $c in
+    401) ok "https://$DOMAIN/android/ asks for a password (401 without one)";;
+    200) fail "https://$DOMAIN/android/terraforming-mars.apk is served WITHOUT a password";;
+    *) fail "https://$DOMAIN/android/terraforming-mars.apk → ${c:-000} (expected 401 without a password)";;
+  esac
 fi
 
 # -------------------------------------------------------------- databases ----
