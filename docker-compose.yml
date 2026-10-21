@@ -1,6 +1,8 @@
-# Two instances of the game server behind one Caddy:
+# Three instances of the game server behind one Caddy:
 #   app            - main instance, built from the automa checkout
 #   app-tournament - tournament instance, built from the tournament checkout
+#   app-upstream   - stock upstream instance for bug reproductions, built from
+#                    the fork's main checkout (upstream main merged in)
 # Caddy also serves the Android APK that android-build.sh builds outside compose.
 #
 # The project name is pinned to `deploy` because the original setup derived it
@@ -92,6 +94,47 @@ services:
     networks:
       - backend-tournament
 
+  app-upstream:
+    build: ${UPSTREAM_CHECKOUT:-../terraforming-mars-upstream}
+    restart: unless-stopped
+    depends_on:
+      postgres-upstream:
+        condition: service_healthy
+    environment:
+      - POSTGRES_HOST=postgresql://${UPSTREAM_POSTGRES_USER}:${UPSTREAM_POSTGRES_PASSWORD}@postgres-upstream:5432/${UPSTREAM_POSTGRES_DB}?sslmode=disable
+      - SERVER_ID=${UPSTREAM_SERVER_ID}
+      - MAX_GAME_DAYS=${UPSTREAM_MAX_GAME_DAYS:-10}
+      - GAME_CACHE=${UPSTREAM_GAME_CACHE:-sweep=auto;idle_age=336h}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+      - backend-upstream
+
+  postgres-upstream:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${UPSTREAM_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${UPSTREAM_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${UPSTREAM_POSTGRES_DB}
+    volumes:
+      - pgdata_upstream:/var/lib/postgresql
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${UPSTREAM_POSTGRES_USER} -d ${UPSTREAM_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-upstream
+
   housie:
     container_name: housie
     build: ${HOUSIE_CHECKOUT:-../housie}
@@ -163,6 +206,8 @@ services:
     environment:
       - DOMAIN=${DOMAIN}
       - TOURNAMENT_DOMAIN=${TOURNAMENT_DOMAIN}
+      # upstream.localhost is a fallback for the same set-but-empty reason as HOUSIE_DOMAIN below
+      - UPSTREAM_DOMAIN=${UPSTREAM_DOMAIN:-upstream.localhost}
       # default must live BOTH here and in the Caddyfile placeholder: a set-but-empty
       # env var would otherwise defeat Caddy's own {$VAR:default} fallback
       - HOUSIE_DOMAIN=${HOUSIE_DOMAIN:-housie.localhost}
@@ -194,6 +239,7 @@ networks:
   frontend:
   backend:
   backend-tournament:
+  backend-upstream:
   backend-arena:
 
 volumes:
@@ -201,4 +247,5 @@ volumes:
   caddy_data:
   caddy_config:
   pgdata_tournament:
+  pgdata_upstream:
   housie_data:

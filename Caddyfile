@@ -36,6 +36,12 @@
     reverse_proxy app-tournament:8080
 }
 
+# the :upstream.localhost fallback matters for the same reason as housie's below
+{$UPSTREAM_DOMAIN:upstream.localhost} {
+    import tmsite
+    reverse_proxy app-upstream:8080
+}
+
 (housiesite) {
     handle_errors {
         @502 expression {err.status_code} == 502

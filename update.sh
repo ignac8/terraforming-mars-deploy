@@ -7,6 +7,8 @@
 #        main       — origin/automa, with upstream/main auto-merged
 #        tournament — origin/tournament, with upstream/main auto-merged
 #                     (frozen 18:00-24:00 Polish time, see below)
+#        upstream   — origin/main, with upstream/main auto-merged (same quiet
+#                     hours): stock upstream code, for bug reproductions
 #        android    — origin/automa-android, with origin/automa auto-merged;
 #                     android-build.sh (started in the background) builds the APK
 #        pokebot    — origin/main, no upstream (private; deploy key, see README)
@@ -29,12 +31,14 @@ fi
 DEPLOY_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
+UPSTREAM_CHECKOUT="${UPSTREAM_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-upstream}"
 HOUSIE_CHECKOUT="${HOUSIE_CHECKOUT:-$DEPLOY_DIR/../housie}"
 POKEBOT_CHECKOUT="${POKEBOT_CHECKOUT:-$DEPLOY_DIR/../pokebot}"
 ANDROID_CHECKOUT="${ANDROID_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-android}"
 ANDROID_WORK="${ANDROID_WORK:-$DEPLOY_DIR/../tm-android}"
 MAIN_BRANCH="${MAIN_BRANCH:-automa}"
 TOURNAMENT_BRANCH="${TOURNAMENT_BRANCH:-tournament}"
+UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-main}"
 HOUSIE_BRANCH="${HOUSIE_BRANCH:-main}"
 POKEBOT_BRANCH="${POKEBOT_BRANCH:-main}"
 ANDROID_BRANCH="${ANDROID_BRANCH:-automa-android}"
@@ -93,6 +97,8 @@ update_checkout() {
 # Quiet hours: tournament games are played 18:00-24:00 Polish time, so the
 # tournament checkout takes no new upstream commits then. Pushes to
 # origin/tournament still deploy, on the upstream/main fetched before 18:00.
+# The upstream checkout keeps the same hours, so its rebuilds don't add load
+# during a tournament evening either.
 TOURNAMENT_UPSTREAM=yes
 if [ "$(TZ=Europe/Warsaw date +%H)" -ge 18 ] && [ -z "$MERGE_UPSTREAM_NOW" ]; then
     TOURNAMENT_UPSTREAM=frozen
@@ -100,6 +106,7 @@ fi
 
 MAIN_CHANGED=$(update_checkout "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes)
 TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" "$TOURNAMENT_UPSTREAM")
+UPSTREAM_CHANGED=$(update_checkout "$UPSTREAM_CHECKOUT" "$UPSTREAM_BRANCH" "$TOURNAMENT_UPSTREAM")
 HOUSIE_CHANGED=$(update_checkout "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH" no)
 POKEBOT_CHANGED=$(update_checkout "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH" no)
 
@@ -134,7 +141,7 @@ base_images() {
 }
 
 BASE_CHANGED=0
-BASES=$( (base_images "$MAIN_CHECKOUT"; base_images "$TOURNAMENT_CHECKOUT"; base_images "$HOUSIE_CHECKOUT"; base_images "$POKEBOT_CHECKOUT"; base_images "$DEPLOY_DIR/showdown") | sort -u)
+BASES=$( (base_images "$MAIN_CHECKOUT"; base_images "$TOURNAMENT_CHECKOUT"; base_images "$UPSTREAM_CHECKOUT"; base_images "$HOUSIE_CHECKOUT"; base_images "$POKEBOT_CHECKOUT"; base_images "$DEPLOY_DIR/showdown") | sort -u)
 for img in $BASES; do
     BEFORE=$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null || echo none)
     docker pull -q "$img" >/dev/null 2>&1 || continue
@@ -167,7 +174,7 @@ needs_build() {
 
 cd "$DEPLOY_DIR" || exit 1
 docker compose pull --quiet 2>&1
-for entry in "app:$MAIN_CHANGED:" "app-tournament:$TOURNAMENT_CHANGED:" "housie:$HOUSIE_CHANGED:" "arena:$POKEBOT_CHANGED:" "showdown:0:$DEPLOY_DIR/showdown/Dockerfile"; do
+for entry in "app:$MAIN_CHANGED:" "app-tournament:$TOURNAMENT_CHANGED:" "app-upstream:$UPSTREAM_CHANGED:" "housie:$HOUSIE_CHANGED:" "arena:$POKEBOT_CHANGED:" "showdown:0:$DEPLOY_DIR/showdown/Dockerfile"; do
     service=${entry%%:*}
     rest=${entry#*:}
     flag=${rest%%:*}

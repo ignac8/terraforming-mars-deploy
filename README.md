@@ -1,11 +1,14 @@
 # Deployment
 
-All deployment configuration for the VPS lives in this repo. It runs **two
+All deployment configuration for the VPS lives in this repo. It runs **three
 instances** of the game server plus **housie** (the family task board) behind
 one Caddy:
 
 - **app** — the main instance, built from the `automa` branch
 - **app-tournament** — the tournament practice instance, built from the `tournament` branch
+- **app-upstream** — a stock upstream server for reproducing bugs, built from
+  the fork's `main` (which follows upstream `main`), so a bug can be shown on
+  upstream code without creating games on the official server
 - **housie** — private task board, built from `ignac8/housie` `main`
 - **showdown** — an upstream Pokemon Showdown server at the commit pokebot pins, for the arena
 - **arena** — pokebot's Platinum bot, built from `ignac8/pokebot` `main` (private; deploy key)
@@ -24,6 +27,7 @@ domains.
 ~/tm-deploy/                     this repo (compose, Caddyfile, update.sh, .env)
 ~/terraforming-mars/             automa checkout (source only)
 ~/terraforming-mars-tournament/  tournament checkout (source only)
+~/terraforming-mars-upstream/    main checkout for app-upstream (source only)
 ~/housie/                        housie checkout (source only)
 ~/housie-backups/                clone of ignac8/housie-backups (harvest target)
 ~/pokebot/                       pokebot checkout (source only)
@@ -36,6 +40,7 @@ Containers (compose project pinned to `deploy` so the pre-existing volumes
 
 - `app` + `postgres` (networks: frontend, backend)
 - `app-tournament` + `postgres-tournament` (networks: frontend, backend-tournament)
+- `app-upstream` + `postgres-upstream` (volume `pgdata_upstream`, networks: frontend, backend-upstream)
 - `housie` (volume `housie_data`, network: frontend)
 - `showdown` (127.0.0.1:8000, networks: frontend, backend-arena) + `arena` (network: backend-arena)
 - `caddy` (ports 80/443, network: frontend)
@@ -53,12 +58,14 @@ A host cron job runs `update.sh` every minute. It:
    To take the latest upstream anyway, run
    `MERGE_UPSTREAM_NOW=1 ~/tm-deploy/update.sh 2>&1 | tee -a ~/tm-update.log`
    (it waits for a running cron instance instead of exiting).
+   The upstream checkout (`origin/main` with `upstream/main` merged) keeps the
+   same hours, so its rebuilds don't add load during a tournament evening.
 4. Resets the pokebot checkout to `origin/main`, no upstream merge (same
    pattern as housie).
 5. Resets the android checkout to `origin/automa-android` and merges
    `origin/automa` (the pushed branch, not the server's upstream merge of it),
    then starts `android-build.sh` in the background (see below).
-6. Pulls Docker base images, rebuilds `app`/`app-tournament` when their sources
+6. Pulls Docker base images, rebuilds `app`/`app-tournament`/`app-upstream` when their sources
    or bases changed (with a weekly fallback rebuild), `arena` when its
    checkout changed, `showdown` when its Dockerfile changed, and
    `docker compose up -d`.
@@ -71,8 +78,9 @@ Crontab entries (updates every minute, database backups nightly):
 40 3 * * * ~/tm-deploy/housie-backup.sh >> ~/housie-backup.log 2>&1
 ```
 
-`backup.sh` dumps both databases to `~/tm-backups/` and keeps 14 days
-(`BACKUP_DIR` / `RETENTION_DAYS` env overrides).
+`backup.sh` dumps the main and tournament databases to `~/tm-backups/` and
+keeps 14 days (`BACKUP_DIR` / `RETENTION_DAYS` env overrides). The upstream
+instance has no dump: its games are throwaway reproductions.
 
 `housie-backup.sh` harvests housie's own 03:20 in-app backups (SQLite
 snapshot + JSON export + attachment files) into `~/housie-backups` and
@@ -133,7 +141,7 @@ with certificate expiry judged against Caddy's renewal window, the update
 cron (crontab lines, last run, `~/tm-update.log` errors, build markers,
 each checkout in sync with origin), the Android APK (built from the android
 checkout's HEAD or failed, signing key present, `/android/` asking for a
-password), both Postgres instances, the nightly
+password), all three Postgres instances, the nightly
 dumps and the housie harvest, the arena's recent games and Caddy's TLS
 errors. Every check is `ok`, `WARN` or `FAIL`, the summary at the end repeats
 the non-ok ones, and the exit code is non-zero when anything failed.
@@ -159,6 +167,8 @@ conflict stops counting as a warning once every checkout has its merge source
    git -C ~/terraforming-mars remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
    git clone -b tournament https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars-tournament
    git -C ~/terraforming-mars-tournament remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
+   git clone -b main https://github.com/ignac8/terraforming-mars.git ~/terraforming-mars-upstream
+   git -C ~/terraforming-mars-upstream remote add upstream https://github.com/terraforming-mars/terraforming-mars.git
    git clone github-housie:ignac8/housie.git ~/housie
    git clone github-housie-backups:ignac8/housie-backups.git ~/housie-backups
    git clone github-pokebot:ignac8/pokebot.git ~/pokebot
@@ -176,8 +186,9 @@ conflict stops counting as a warning once every checkout has its merge source
 4. `cd ~/tm-deploy && docker compose up -d`
 5. Add the crontab entry above.
 
-Admin panels: `https://<DOMAIN>/admin?serverId=<SERVER_ID>` and
-`https://<TOURNAMENT_DOMAIN>/admin?serverId=<TOURNAMENT_SERVER_ID>`.
+Admin panels: `https://<DOMAIN>/admin?serverId=<SERVER_ID>`,
+`https://<TOURNAMENT_DOMAIN>/admin?serverId=<TOURNAMENT_SERVER_ID>` and
+`https://<UPSTREAM_DOMAIN>/admin?serverId=<UPSTREAM_SERVER_ID>`.
 
 ## Playing Platinum
 
@@ -200,19 +211,22 @@ If the hosted client cannot reach the server, the tunnel door is
 ## Notes
 
 - Unfinished games are purged 10 days after creation by default; set
-  `MAX_GAME_DAYS` / `TOURNAMENT_MAX_GAME_DAYS` in `.env` to change (the
-  official server uses 7).
+  `MAX_GAME_DAYS` / `TOURNAMENT_MAX_GAME_DAYS` / `UPSTREAM_MAX_GAME_DAYS` in
+  `.env` to change (the official server uses 7).
 - `update.sh` env overrides: `MAIN_CHECKOUT`, `TOURNAMENT_CHECKOUT`,
-  `HOUSIE_CHECKOUT`, `POKEBOT_CHECKOUT`, `MAIN_BRANCH`, `TOURNAMENT_BRANCH`,
-  `HOUSIE_BRANCH`, `POKEBOT_BRANCH`, `DEPLOY_BRANCH`.
+  `UPSTREAM_CHECKOUT`, `HOUSIE_CHECKOUT`, `POKEBOT_CHECKOUT`, `MAIN_BRANCH`,
+  `TOURNAMENT_BRANCH`, `UPSTREAM_BRANCH`, `HOUSIE_BRANCH`, `POKEBOT_BRANCH`,
+  `DEPLOY_BRANCH`.
 - The lock file is `/tmp/tm-deploy-update.lock`; build markers are
   `/tmp/tm-last-build-app`, `/tmp/tm-last-build-app-tournament`,
+  `/tmp/tm-last-build-app-upstream`,
   `/tmp/tm-last-build-housie`, `/tmp/tm-last-build-arena` and
   `/tmp/tm-last-build-showdown`.
 - housie's `HOUSIE_DOMAIN` default (`housie.localhost`) is declared BOTH in
   compose and in the Caddyfile placeholder — a set-but-empty variable would
   otherwise defeat Caddy's fallback and swallow every request on the vhost.
   `ARENA_DOMAIN` (`pokemon.zerko.it` — the production name itself, so the
-  vhost needs no `.env` entry) follows the same pattern for the same reason.
+  vhost needs no `.env` entry) and `UPSTREAM_DOMAIN` (`upstream.localhost`)
+  follow the same pattern for the same reason.
 - housie serves attachments only through its authenticated API; nothing from
   its volume is ever mounted into Caddy.
