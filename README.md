@@ -156,7 +156,10 @@ prom-client resets it on every read of `/api/metrics`. The metrics are fetched
 from inside each container, so `SERVER_ID` never leaves it. Pending apt
 updates are `ok` with the next unattended-upgrades run named, and a merge
 conflict stops counting as a warning once every checkout has its merge source
-(`upstream/main`, or `origin/automa` for the android checkout).
+(`upstream/main`, or `origin/automa` for the android checkout). A failed
+`git fetch` stops counting once 15 minutes pass without another, and Caddy's
+TLS/ACME errors for a name stop counting once Caddy got that name a
+certificate after them (a new domain whose DNS came late, say).
 
 ## Fresh setup
 

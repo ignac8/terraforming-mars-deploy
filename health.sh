@@ -276,17 +276,26 @@ if [ -f "$OWNER_HOME/tm-update.log" ]; then
   # them outlive the fix by days; once every checkout has its merge source again they are history
   # (the per-checkout lines below check that live). Any other error keeps its WARN
   conflicts=$(grep 'merge conflict with ' <<<"$errlines"); nc=$(grep -c . <<<"$conflicts")
-  others=$(grep -v 'merge conflict with ' <<<"$errlines"); no=$(grep -c . <<<"$others")
+  # a failed git fetch (GitHub or the network down for a few minutes) logs a line per checkout a
+  # minute; once none has come for 15 minutes the fetches work again, so older ones are history
+  fetches=$(grep -E 'ERROR: git fetch .*failed' <<<"$errlines"); nf=$(grep -c . <<<"$fetches")
+  others=$(grep -v 'merge conflict with ' <<<"$errlines" | grep -vE 'ERROR: git fetch .*failed'); no=$(grep -c . <<<"$others")
   open=; for c in "$MAIN_CHECKOUT:upstream/main" "$TOURNAMENT_CHECKOUT:upstream/main" "$UPSTREAM_CHECKOUT:upstream/main" "$ANDROID_CHECKOUT:origin/automa"; do
     merge_open "${c%%:*}" "${c#*:}" && open+=" $(basename "${c%%:*}")"; done
   ((no > 0)) && warn "$no ERROR lines in ~/tm-update.log in the last 3 days"
   if ((nc > 0)) && [ -n "$open" ]; then warn "$nc merge-conflict lines in ~/tm-update.log in the last 3 days, still open in$open"
   elif ((nc > 0)); then ok "$nc merge-conflict lines in ~/tm-update.log in the last 3 days, the last at $(tail -1 <<<"$conflicts" | cut -c1-16) UTC; resolved, every checkout has its merge source"; fi
-  ((no + nc == 0)) && ok "no ERROR in ~/tm-update.log in the last 3 days"
+  if ((nf > 0)); then
+    flast=$(tail -1 <<<"$fetches" | cut -c1-19); fage=$(( $(date +%s) - $(date -u -d "$flast" +%s 2>/dev/null || echo 0) ))
+    if ((fage < 900)); then warn "$nf git fetch errors in ~/tm-update.log in the last 3 days, the last $(hum "$fage") ago (GitHub or the network still failing?)"
+    else ok "$nf git fetch errors in ~/tm-update.log in the last 3 days, the last at ${flast:0:16} UTC; none since, the fetches work again"; fi
+  fi
+  ((no + nc + nf == 0)) && ok "no ERROR in ~/tm-update.log in the last 3 days"
   info "~/tm-update.log ($(du -h "$OWNER_HOME/tm-update.log" | cut -f1)), last 12 lines:"
   tail -n 12 "$OWNER_HOME/tm-update.log" | cut -c1-200 | sed 's/^/         │ /'
   if ((no > 0)); then info "last ERROR lines:"; tail -3 <<<"$others" | cut -c1-200 | sed 's/^/         │ /'
-  elif [ -n "$open" ]; then info "last ERROR lines:"; tail -3 <<<"$conflicts" | cut -c1-200 | sed 's/^/         │ /'; fi
+  elif [ -n "$open" ]; then info "last ERROR lines:"; tail -3 <<<"$conflicts" | cut -c1-200 | sed 's/^/         │ /'
+  elif ((nf > 0 && fage < 900)); then info "last ERROR lines:"; tail -3 <<<"$fetches" | cut -c1-200 | sed 's/^/         │ /'; fi
 else warn "~/tm-update.log missing"; fi
 echo
 for s in app app-tournament app-upstream housie arena showdown; do
@@ -454,10 +463,30 @@ else info "skipped (no docker / no arena container)"; fi
 hdr "Caddy"
 cc=$( ((DOCKER_OK)) && cid_of caddy )
 if [ -n "$cc" ]; then
-  cerr=$(dk logs --since 24h "$cc" 2>&1 | grep '"level":"error"')
-  n=$(grep -c . <<<"$cerr"); tls=$(grep -ciE '"logger":"tls|acme|certificate' <<<"$cerr")
-  if ((tls > 0)); then fail "caddy: $tls TLS/ACME error lines in 24h ($n errors total)"
-  elif ((n > 20)); then warn "caddy: $n error lines in 24h"
+  clog=$(dk logs --since 24h "$cc" 2>&1)
+  cerr=$(grep '"level":"error"' <<<"$clog")
+  n=$(grep -c . <<<"$cerr")
+  # Per name: its TLS/ACME error lines, the newest one's time and the newest successful obtain or
+  # renewal. A name that got a certificate after its last error is history (a new domain whose DNS
+  # came late, say); a renewal still failing has no later success. A line naming no domain counts as "-"
+  tlsnames=$(awk '
+    function name() { if (match($0, /"identifier":"[^"]*"/)) return substr($0, RSTART + 14, RLENGTH - 15)
+                      if (match($0, /"error":"\[[^]]*\]/)) return substr($0, RSTART + 10, RLENGTH - 11)
+                      if (match($0, /"error":"[A-Za-z0-9.-]+\.[A-Za-z]+: /)) return substr($0, RSTART + 9, RLENGTH - 11); return "-" }
+    function ts() { return match($0, /"ts":[0-9]+/) ? substr($0, RSTART + 5, RLENGTH - 5) + 0 : 0 }
+    /"level":"error"/ && tolower($0) ~ /"logger":"tls|acme|certificate/ { d = name(); c[d]++; t = ts(); if (t > e[d]) e[d] = t; next }
+    /"msg":"certificate (obtained|renewed) successfully"/ { d = name(); t = ts(); if (t > s[d]) s[d] = t }
+    END { for (d in c) print d, c[d], e[d], s[d] + 0 }' <<<"$clog")
+  tls=0; healed=0; open_names=; healed_names=
+  while read -r d cnt last good; do
+    [ -n "$d" ] || continue
+    if [ "$d" != - ] && ((good > last)); then healed=$((healed + cnt)); healed_names+=" $d"
+    else tls=$((tls + cnt)); open_names+=" $d"; fi
+  done <<<"$tlsnames"
+  other=$((n - tls - healed))
+  if ((tls > 0)); then fail "caddy: $tls TLS/ACME error lines in 24h for$open_names ($n errors total)"
+  elif ((other > 20)); then warn "caddy: $other non-TLS error lines in 24h"
+  elif ((healed > 0)); then ok "caddy: $healed TLS/ACME error lines in 24h, each before a later certificate for$healed_names ($n errors total)"
   else ok "caddy: $n error lines in 24h, none about TLS"; fi
   ((n > 0)) && tail -3 <<<"$cerr" | cut -c1-220 | sed 's/^/         │ /'
 else info "skipped (no docker / no caddy container)"; fi
