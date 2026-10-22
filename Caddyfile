@@ -42,6 +42,12 @@
     reverse_proxy app-upstream:8080
 }
 
+# same fallback reasoning as upstream's above
+{$UNDO_DOMAIN:undo.localhost} {
+    import tmsite
+    reverse_proxy app-undo:8080
+}
+
 (housiesite) {
     handle_errors {
         @502 expression {err.status_code} == 502

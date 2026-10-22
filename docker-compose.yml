@@ -1,8 +1,10 @@
-# Three instances of the game server behind one Caddy:
+# Four instances of the game server behind one Caddy:
 #   app            - main instance, built from the automa checkout
 #   app-tournament - tournament instance, built from the tournament checkout
 #   app-upstream   - stock upstream instance for bug reproductions, built from
 #                    the fork's main checkout (upstream main merged in)
+#   app-undo       - test instance for the rewind/replay work, built from the
+#                    fork's tournament-undo checkout (tournament + undo)
 # Caddy also serves the Android APK that android-build.sh builds outside compose.
 #
 # The project name is pinned to `deploy` because the original setup derived it
@@ -135,6 +137,47 @@ services:
     networks:
       - backend-upstream
 
+  app-undo:
+    build: ${UNDO_CHECKOUT:-../terraforming-mars-undo}
+    restart: unless-stopped
+    depends_on:
+      postgres-undo:
+        condition: service_healthy
+    environment:
+      - POSTGRES_HOST=postgresql://${UNDO_POSTGRES_USER}:${UNDO_POSTGRES_PASSWORD}@postgres-undo:5432/${UNDO_POSTGRES_DB}?sslmode=disable
+      - SERVER_ID=${UNDO_SERVER_ID}
+      - MAX_GAME_DAYS=${UNDO_MAX_GAME_DAYS:-10}
+      - GAME_CACHE=${UNDO_GAME_CACHE:-sweep=auto;idle_age=336h}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+      - backend-undo
+
+  postgres-undo:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${UNDO_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${UNDO_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${UNDO_POSTGRES_DB}
+    volumes:
+      - pgdata_undo:/var/lib/postgresql
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${UNDO_POSTGRES_USER} -d ${UNDO_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-undo
+
   housie:
     container_name: housie
     build: ${HOUSIE_CHECKOUT:-../housie}
@@ -208,6 +251,8 @@ services:
       - TOURNAMENT_DOMAIN=${TOURNAMENT_DOMAIN}
       # upstream.localhost is a fallback for the same set-but-empty reason as HOUSIE_DOMAIN below
       - UPSTREAM_DOMAIN=${UPSTREAM_DOMAIN:-upstream.localhost}
+      # same set-but-empty reason as UPSTREAM_DOMAIN
+      - UNDO_DOMAIN=${UNDO_DOMAIN:-undo.localhost}
       # default must live BOTH here and in the Caddyfile placeholder: a set-but-empty
       # env var would otherwise defeat Caddy's own {$VAR:default} fallback
       - HOUSIE_DOMAIN=${HOUSIE_DOMAIN:-housie.localhost}
@@ -240,6 +285,7 @@ networks:
   backend:
   backend-tournament:
   backend-upstream:
+  backend-undo:
   backend-arena:
 
 volumes:
@@ -248,4 +294,5 @@ volumes:
   caddy_config:
   pgdata_tournament:
   pgdata_upstream:
+  pgdata_undo:
   housie_data:

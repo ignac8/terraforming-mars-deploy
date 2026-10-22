@@ -32,6 +32,7 @@ fi
 MAIN_CHECKOUT="${MAIN_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars}"
 TOURNAMENT_CHECKOUT="${TOURNAMENT_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-tournament}"
 UPSTREAM_CHECKOUT="${UPSTREAM_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-upstream}"
+UNDO_CHECKOUT="${UNDO_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-undo}"
 HOUSIE_CHECKOUT="${HOUSIE_CHECKOUT:-$DEPLOY_DIR/../housie}"
 POKEBOT_CHECKOUT="${POKEBOT_CHECKOUT:-$DEPLOY_DIR/../pokebot}"
 ANDROID_CHECKOUT="${ANDROID_CHECKOUT:-$DEPLOY_DIR/../terraforming-mars-android}"
@@ -40,6 +41,7 @@ ANDROID_KEYSTORE="${ANDROID_KEYSTORE:-$ANDROID_WORK/keystore/release.jks}"
 MAIN_BRANCH="${MAIN_BRANCH:-automa}"
 TOURNAMENT_BRANCH="${TOURNAMENT_BRANCH:-tournament}"
 UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-main}"
+UNDO_BRANCH="${UNDO_BRANCH:-tournament-undo}"
 HOUSIE_BRANCH="${HOUSIE_BRANCH:-main}"
 POKEBOT_BRANCH="${POKEBOT_BRANCH:-main}"
 ANDROID_BRANCH="${ANDROID_BRANCH:-automa-android}"
@@ -137,7 +139,7 @@ else
   echo
   ( cd "$D" 2>/dev/null && dk compose ps -a 2>/dev/null ) | sed 's/^/       /'
   echo
-  for svc in caddy app postgres app-tournament postgres-tournament app-upstream postgres-upstream housie showdown arena; do
+  for svc in caddy app postgres app-tournament postgres-tournament app-upstream postgres-upstream app-undo postgres-undo housie showdown arena; do
     cid=$(cid_of "$svc")
     if [ -z "$cid" ]; then fail "$svc: no container in compose project '$PROJECT'"; continue; fi
     read -r name st health rc oom started <<<"$(dk inspect -f '{{.Name}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}} {{.RestartCount}} {{.State.OOMKilled}} {{.State.StartedAt}}' "$cid" 2>/dev/null)"
@@ -182,7 +184,7 @@ if has sar && [ -r "$sa" ]; then
   fi
 else info "no sar history (sysstat not installed, or $sa unreadable)"; fi
 if ((DOCKER_OK)); then
-  for svc in app app-tournament app-upstream; do
+  for svc in app app-tournament app-upstream app-undo; do
     cid=$(cid_of "$svc"); [ -n "$cid" ] || continue
     # SERVER_ID never leaves the container: wget runs inside it, against its own port
     m=$(dk exec "$cid" sh -c 'wget -qO- "http://127.0.0.1:8080/api/metrics?serverId=$SERVER_ID"' 2>/dev/null)
@@ -203,7 +205,7 @@ fi
 # -------------------------------------------------------------- endpoints ----
 hdr "Endpoints (public, through Caddy + TLS)"
 [ -f "$ENVF" ] || fail "$ENVF missing — domains unknown, endpoint checks will be skipped"
-DOMAIN=$(envv DOMAIN); TDOMAIN=$(envv TOURNAMENT_DOMAIN); UDOMAIN=$(envv UPSTREAM_DOMAIN)
+DOMAIN=$(envv DOMAIN); TDOMAIN=$(envv TOURNAMENT_DOMAIN); UDOMAIN=$(envv UPSTREAM_DOMAIN); NDOMAIN=$(envv UNDO_DOMAIN)
 HDOMAIN=$(envv HOUSIE_DOMAIN); HDOMAIN=${HDOMAIN:-housie.localhost}
 ADOMAIN=$(envv ARENA_DOMAIN); ADOMAIN=${ADOMAIN:-pokemon.zerko.it}
 TMPB=$(mktemp); trap 'rm -f "$TMPB"' EXIT
@@ -220,6 +222,7 @@ redirect(){ local c; c=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "
 if [ -n "$DOMAIN" ]; then probe "main game  " "https://$DOMAIN/" '<html'; redirect "$DOMAIN"; fi
 if [ -n "$TDOMAIN" ]; then probe "tournament " "https://$TDOMAIN/" '<html'; redirect "$TDOMAIN"; fi
 if [ -n "$UDOMAIN" ]; then probe "upstream   " "https://$UDOMAIN/" '<html'; redirect "$UDOMAIN"; fi
+if [ -n "$NDOMAIN" ]; then probe "undo       " "https://$NDOMAIN/" '<html'; redirect "$NDOMAIN"; fi
 if probe "housie     " "https://$HDOMAIN/health" '"status" *: *"ok"'; then
   HOUSIE_HEALTH=$(cat "$TMPB"); info "housie /health: $HOUSIE_HEALTH"
 fi
@@ -228,7 +231,7 @@ probe "showdown   " "http://127.0.0.1:8000/showdown/info" 'websocket'
 rm -f "$TMPB"
 echo
 if has openssl; then
-  for d in $DOMAIN $TDOMAIN $UDOMAIN $HDOMAIN $ADOMAIN; do
+  for d in $DOMAIN $TDOMAIN $UDOMAIN $NDOMAIN $HDOMAIN $ADOMAIN; do
     [ "$d" = housie.localhost ] && continue
     dates=$(echo | timeout 15 openssl s_client -servername "$d" -connect "$d:443" 2>/dev/null | openssl x509 -noout -dates 2>/dev/null)
     nb=$(sed -n 's/^notBefore=//p' <<<"$dates"); na=$(sed -n 's/^notAfter=//p' <<<"$dates")
@@ -298,7 +301,7 @@ if [ -f "$OWNER_HOME/tm-update.log" ]; then
   elif ((nf > 0 && fage < 900)); then info "last ERROR lines:"; tail -3 <<<"$fetches" | cut -c1-200 | sed 's/^/         │ /'; fi
 else warn "~/tm-update.log missing"; fi
 echo
-for s in app app-tournament app-upstream housie arena showdown; do
+for s in app app-tournament app-upstream app-undo housie arena showdown; do
   m=/tmp/tm-last-build-$s
   [ -f "$m" ] && info "$s last image build $(hum "$(age "$m")") ago" || warn "$s: no build marker $m (rebuild pending or /tmp cleared by a reboot)"
 done
@@ -322,6 +325,7 @@ chk "$D" "$DEPLOY_BRANCH"
 chk "$MAIN_CHECKOUT" "$MAIN_BRANCH" upstream/main
 chk "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" upstream/main
 chk "$UPSTREAM_CHECKOUT" "$UPSTREAM_BRANCH" upstream/main
+chk "$UNDO_CHECKOUT" "$UNDO_BRANCH"
 chk "$ANDROID_CHECKOUT" "$ANDROID_BRANCH" origin/automa
 chk "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH"
 chk "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH"
@@ -329,7 +333,7 @@ if ((DOCKER_OK)); then
   # running image vs checkout HEAD. A fully cached rebuild keeps the OLD image timestamp, so a
   # docs-only commit legitimately leaves HEAD newer than the image: informational, not a warning.
   # A real build failure shows up as ERROR/failed-to-solve in ~/tm-update.log above.
-  for pair in "app:$MAIN_CHECKOUT" "app-tournament:$TOURNAMENT_CHECKOUT" "app-upstream:$UPSTREAM_CHECKOUT" "housie:$HOUSIE_CHECKOUT" "arena:$POKEBOT_CHECKOUT"; do
+  for pair in "app:$MAIN_CHECKOUT" "app-tournament:$TOURNAMENT_CHECKOUT" "app-upstream:$UPSTREAM_CHECKOUT" "app-undo:$UNDO_CHECKOUT" "housie:$HOUSIE_CHECKOUT" "arena:$POKEBOT_CHECKOUT"; do
     svc=${pair%%:*}; dir=${pair#*:}
     cid=$(cid_of "$svc"); [ -n "$cid" ] && [ -d "$dir/.git" ] || continue
     img=$(dk inspect -f '{{.Image}}' "$cid" 2>/dev/null)
@@ -392,6 +396,7 @@ if ((DOCKER_OK)); then
   pgcheck "main      " postgres "$(envv POSTGRES_USER)" "$(envv POSTGRES_DB)"
   pgcheck "tournament" postgres-tournament "$(envv TOURNAMENT_POSTGRES_USER)" "$(envv TOURNAMENT_POSTGRES_DB)"
   pgcheck "upstream  " postgres-upstream "$(envv UPSTREAM_POSTGRES_USER)" "$(envv UPSTREAM_POSTGRES_DB)"
+  pgcheck "undo      " postgres-undo "$(envv UNDO_POSTGRES_USER)" "$(envv UNDO_POSTGRES_DB)"
   hc=$(cid_of housie)
   if [ -n "$hc" ]; then
     info "housie /data: $(dk exec "$hc" sh -c 'du -sh /data /data/attachments /data/backups 2>/dev/null | tr "\n" " "' 2>/dev/null)"
