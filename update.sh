@@ -103,9 +103,8 @@ update_checkout() {
 # tournament checkout takes no new upstream commits then. Pushes to
 # origin/tournament still deploy, on the upstream/main fetched before 18:00.
 # The upstream checkout keeps the same hours, so its rebuilds don't add load
-# during a tournament evening either. The undo checkout is held completely
-# then (not even a push is fetched), so its build never competes with live
-# tournament games.
+# during a tournament evening either. The undo checkout is a test instance and
+# always deploys what is pushed.
 TOURNAMENT_UPSTREAM=yes
 if [ "$(TZ=Europe/Warsaw date +%H)" -ge 18 ] && [ -z "$MERGE_UPSTREAM_NOW" ]; then
     TOURNAMENT_UPSTREAM=frozen
@@ -114,10 +113,7 @@ fi
 MAIN_CHANGED=$(update_checkout "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes)
 TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" "$TOURNAMENT_UPSTREAM")
 UPSTREAM_CHANGED=$(update_checkout "$UPSTREAM_CHECKOUT" "$UPSTREAM_BRANCH" "$TOURNAMENT_UPSTREAM")
-UNDO_CHANGED=0
-if [ "$TOURNAMENT_UPSTREAM" != frozen ]; then
-    UNDO_CHANGED=$(update_checkout "$UNDO_CHECKOUT" "$UNDO_BRANCH" no)
-fi
+UNDO_CHANGED=$(update_checkout "$UNDO_CHECKOUT" "$UNDO_BRANCH" no)
 HOUSIE_CHANGED=$(update_checkout "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH" no)
 POKEBOT_CHANGED=$(update_checkout "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH" no)
 
