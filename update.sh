@@ -2,7 +2,7 @@
 # Auto-update script — invoked by cron every minute.
 #
 # Manages the whole VPS deployment:
-#   1. Self-updates from origin/deploy (this branch).
+#   1. Self-updates from origin/main (this branch).
 #   2. Updates the source checkouts:
 #        main       — origin/automa, with upstream/main auto-merged
 #        tournament — origin/tournament, with upstream/main auto-merged
@@ -10,8 +10,7 @@
 #        upstream   — origin/main, with upstream/main auto-merged (same quiet
 #                     hours): stock upstream code, for bug reproductions
 #        undo       — origin/tournament-undo exactly as pushed, no merge: test
-#                     instance for the rewind/replay work. Held (not updated at
-#                     all) 18:00-24:00 Polish time, see below
+#                     instance for the rewind/replay work, deployed at any hour
 #        android    — origin/automa-android, with origin/automa auto-merged;
 #                     android-build.sh (started in the background) builds the APK
 #        pokebot    — origin/main, no upstream (private; deploy key, see README)
@@ -22,7 +21,7 @@
 #
 # MERGE_UPSTREAM_NOW=1 ~/tm-deploy/update.sh merges the latest upstream/main
 # into the tournament checkout even during quiet hours, waiting for a running
-# cron instance instead of exiting. The same flag also lifts the undo hold.
+# cron instance instead of exiting.
 
 exec 9>/tmp/tm-deploy-update.lock
 if [ -n "$MERGE_UPSTREAM_NOW" ]; then
