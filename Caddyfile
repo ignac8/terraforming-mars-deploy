@@ -42,10 +42,10 @@
     reverse_proxy app-upstream:8080
 }
 
-# same fallback reasoning as upstream's above
+# The retired undo test instance: its games moved into the tournament database, so
+# old links keep working on the tournament domain. Same fallback reasoning as above.
 {$UNDO_DOMAIN:undo.localhost} {
-    import tmsite
-    reverse_proxy app-undo:8080
+    redir https://{$TOURNAMENT_DOMAIN}{uri} permanent
 }
 
 (housiesite) {
