@@ -68,7 +68,9 @@ A host cron job runs `update.sh` every minute. It:
 6. Pulls Docker base images, rebuilds `app`/`app-tournament`/`app-upstream` when their sources
    or bases changed (with a weekly fallback rebuild), `arena` when its
    checkout changed, `showdown` when its Dockerfile changed, and
-   `docker compose up -d`.
+   `docker compose up -d`. From 18:00 to midnight Polish time no image is
+   pulled and the weekly rebuild waits, so a new postgres or base image
+   restarts nothing during a tournament evening. Pushes still deploy.
 
 Crontab entries (updates every minute, database backups nightly):
 

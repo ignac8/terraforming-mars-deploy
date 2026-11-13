@@ -12,7 +12,8 @@
 #        android    — origin/automa-android, with origin/automa auto-merged;
 #                     android-build.sh (started in the background) builds the APK
 #        pokebot    — origin/main, no upstream (private; deploy key, see README)
-#   3. Refreshes Docker base images and rebuilds/recreates whatever changed.
+#   3. Refreshes Docker base images and rebuilds/recreates whatever changed
+#      (no image is refreshed in the quiet hours).
 #
 # Self-locking: if another instance is running, exit silently. Safe to run
 # manually without conflicting with the cron.
@@ -98,9 +99,14 @@ update_checkout() {
 # tournament checkout takes no new upstream commits then. Pushes to
 # origin/tournament still deploy, on the upstream/main fetched before 18:00.
 # The upstream checkout keeps the same hours, so its rebuilds don't add load
-# during a tournament evening either.
+# during a tournament evening either. No Docker image is refreshed in these
+# hours, see section 3.
+QUIET_HOURS=0
+if [ "$(TZ=Europe/Warsaw date +%H)" -ge 18 ]; then
+    QUIET_HOURS=1
+fi
 TOURNAMENT_UPSTREAM=yes
-if [ "$(TZ=Europe/Warsaw date +%H)" -ge 18 ] && [ -z "$MERGE_UPSTREAM_NOW" ]; then
+if [ "$QUIET_HOURS" = "1" ] && [ -z "$MERGE_UPSTREAM_NOW" ]; then
     TOURNAMENT_UPSTREAM=frozen
 fi
 
@@ -135,13 +141,21 @@ mkdir -p "$ANDROID_WORK/apk"
 # safe to run every minute. External bases are FROM targets containing `:` or
 # `/` (excludes internal stage names). ARG NODE_VERSION is substituted from the
 # Dockerfile default.
+#
+# A refreshed image restarts what runs on it: a new postgres image recreates
+# all three databases, a new base image rebuilds and restarts every app. In the
+# quiet hours no image is pulled, here or by `docker compose pull` below, so
+# the refresh happens on the first run after midnight.
 base_images() {
     NODE_VERSION=$(awk -F= '/^ARG NODE_VERSION=/ {print $2; exit}' "$1/Dockerfile")
     awk '/^FROM/ {print $2}' "$1/Dockerfile" | grep -E '[:/]' | sed "s/\${NODE_VERSION}/$NODE_VERSION/g"
 }
 
 BASE_CHANGED=0
-BASES=$( (base_images "$MAIN_CHECKOUT"; base_images "$TOURNAMENT_CHECKOUT"; base_images "$UPSTREAM_CHECKOUT"; base_images "$HOUSIE_CHECKOUT"; base_images "$POKEBOT_CHECKOUT"; base_images "$DEPLOY_DIR/showdown") | sort -u)
+BASES=""
+if [ "$QUIET_HOURS" = "0" ]; then
+    BASES=$( (base_images "$MAIN_CHECKOUT"; base_images "$TOURNAMENT_CHECKOUT"; base_images "$UPSTREAM_CHECKOUT"; base_images "$HOUSIE_CHECKOUT"; base_images "$POKEBOT_CHECKOUT"; base_images "$DEPLOY_DIR/showdown") | sort -u)
+fi
 for img in $BASES; do
     BEFORE=$(docker image inspect -f '{{.Id}}' "$img" 2>/dev/null || echo none)
     docker pull -q "$img" >/dev/null 2>&1 || continue
@@ -158,12 +172,16 @@ done
 # whose Dockerfile lives in THIS repo (showdown) -- that Dockerfile is newer
 # than the marker: `git reset --hard` above touches a changed file's mtime, so
 # a pin bump deploys on the next minute rather than on the weekly fallback.
+# The weekly rebuild waits for the end of the quiet hours too.
 needs_build() {
     marker="/tmp/tm-last-build-$1"
     if [ "$2" = "1" ] || [ "$BASE_CHANGED" = "1" ]; then
         return 0
     fi
-    if [ ! -f "$marker" ] || [ $(($(date +%s) - $(stat -c %Y "$marker"))) -gt 604800 ]; then
+    if [ ! -f "$marker" ]; then
+        return 0
+    fi
+    if [ "$QUIET_HOURS" = "0" ] && [ $(($(date +%s) - $(stat -c %Y "$marker"))) -gt 604800 ]; then
         return 0
     fi
     if [ -n "$3" ] && [ "$3" -nt "$marker" ]; then
@@ -173,7 +191,9 @@ needs_build() {
 }
 
 cd "$DEPLOY_DIR" || exit 1
-docker compose pull --quiet 2>&1
+if [ "$QUIET_HOURS" = "0" ]; then
+    docker compose pull --quiet 2>&1
+fi
 for entry in "app:$MAIN_CHANGED:" "app-tournament:$TOURNAMENT_CHANGED:" "app-upstream:$UPSTREAM_CHANGED:" "housie:$HOUSIE_CHANGED:" "arena:$POKEBOT_CHANGED:" "showdown:0:$DEPLOY_DIR/showdown/Dockerfile"; do
     service=${entry%%:*}
     rest=${entry#*:}
