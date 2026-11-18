@@ -7,7 +7,7 @@
 #        main       — origin/automa, with upstream/main auto-merged
 #        tournament — origin/tournament, with upstream/main auto-merged
 #                     (frozen 18:00-24:00 Polish time, see below)
-#        upstream   — origin/main, with upstream/main auto-merged (same quiet
+#        upstream   — origin/main, with upstream/main auto-merged (no quiet
 #                     hours): stock upstream code, for bug reproductions
 #        android    — origin/automa-android, with origin/automa auto-merged;
 #                     android-build.sh (started in the background) builds the APK
@@ -98,9 +98,9 @@ update_checkout() {
 # Quiet hours: tournament games are played 18:00-24:00 Polish time, so the
 # tournament checkout takes no new upstream commits then. Pushes to
 # origin/tournament still deploy, on the upstream/main fetched before 18:00.
-# The upstream checkout keeps the same hours, so its rebuilds don't add load
-# during a tournament evening either. No Docker image is refreshed in these
-# hours, see section 3.
+# The upstream checkout has no quiet hours: it serves bug reproductions, which
+# need the latest upstream/main at any time. No Docker image is refreshed in
+# these hours, see section 3.
 QUIET_HOURS=0
 if [ "$(TZ=Europe/Warsaw date +%H)" -ge 18 ]; then
     QUIET_HOURS=1
@@ -112,7 +112,7 @@ fi
 
 MAIN_CHANGED=$(update_checkout "$MAIN_CHECKOUT" "$MAIN_BRANCH" yes)
 TOURNAMENT_CHANGED=$(update_checkout "$TOURNAMENT_CHECKOUT" "$TOURNAMENT_BRANCH" "$TOURNAMENT_UPSTREAM")
-UPSTREAM_CHANGED=$(update_checkout "$UPSTREAM_CHECKOUT" "$UPSTREAM_BRANCH" "$TOURNAMENT_UPSTREAM")
+UPSTREAM_CHANGED=$(update_checkout "$UPSTREAM_CHECKOUT" "$UPSTREAM_BRANCH" yes)
 HOUSIE_CHANGED=$(update_checkout "$HOUSIE_CHECKOUT" "$HOUSIE_BRANCH" no)
 POKEBOT_CHANGED=$(update_checkout "$POKEBOT_CHECKOUT" "$POKEBOT_BRANCH" no)
 
